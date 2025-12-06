@@ -995,3 +995,65 @@ async def get_next_questionnaire(x_patient_code: Optional[str] = Header(None)):
             content={"status": "error", "detail": error_msg, "error_type": error_type}
         )
 
+
+@app.get("/getPatients")
+async def get_patients():
+    """
+    Get list of all patients for doctor interface.
+    Returns patient codes and basic info (no PII).
+    """
+    if not async_session:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        async with async_session() as session:
+            result = await _execute_with_retry(
+                session,
+                text("""
+                    SELECT 
+                        p.patient_code,
+                        p.created_at,
+                        (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
+                        (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
+                        (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
+                        (SELECT MAX(entry_date) FROM weekly_entries WHERE patient_id = p.id) as last_weekly_date,
+                        (SELECT MAX(entry_date) FROM daily_entries WHERE patient_id = p.id) as last_daily_date,
+                        (SELECT MAX(entry_date) FROM monthly_entries WHERE patient_id = p.id) as last_monthly_date
+                    FROM patients p
+                    ORDER BY p.created_at DESC
+                """)
+            )
+            
+            if result is None:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "error", "detail": "Database connection pool exhausted, please try again"}
+                )
+            
+            rows = result.fetchall()
+            patients = []
+            for row in rows:
+                patients.append({
+                    "patient_code": row[0],
+                    "created_at": row[1].isoformat() if row[1] else None,
+                    "weekly_count": row[2] or 0,
+                    "daily_count": row[3] or 0,
+                    "monthly_count": row[4] or 0,
+                    "last_weekly_date": row[5].isoformat() if row[5] else None,
+                    "last_daily_date": row[6].isoformat() if row[6] else None,
+                    "last_monthly_date": row[7].isoformat() if row[7] else None,
+                })
+            
+            return {"status": "ok", "patients": patients}
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        error_type = type(e).__name__
+        print(f"Error in getPatients: {error_type}: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": error_msg, "error_type": error_type}
+        )
+
