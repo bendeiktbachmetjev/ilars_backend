@@ -1026,9 +1026,10 @@ async def get_patients():
                         (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
                         (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
                         (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
-                        (SELECT MAX(entry_date) FROM weekly_entries WHERE patient_id = p.id) as last_weekly_date,
-                        (SELECT MAX(entry_date) FROM daily_entries WHERE patient_id = p.id) as last_daily_date,
-                        (SELECT MAX(entry_date) FROM monthly_entries WHERE patient_id = p.id) as last_monthly_date
+                        (SELECT total_score FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_score,
+                        (SELECT entry_date FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_date,
+                        (SELECT health_vas FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_score,
+                        (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
                     FROM patients p
                     ORDER BY p.created_at DESC
                 """)
@@ -1049,9 +1050,10 @@ async def get_patients():
                     "weekly_count": row[2] or 0,
                     "daily_count": row[3] or 0,
                     "monthly_count": row[4] or 0,
-                    "last_weekly_date": row[5].isoformat() if row[5] else None,
-                    "last_daily_date": row[6].isoformat() if row[6] else None,
-                    "last_monthly_date": row[7].isoformat() if row[7] else None,
+                    "last_lars_score": row[5] if row[5] is not None else None,
+                    "last_lars_date": row[6].isoformat() if row[6] else None,
+                    "last_eq5d5l_score": row[7] if row[7] is not None else None,
+                    "last_eq5d5l_date": row[8].isoformat() if row[8] else None,
                 })
             
             return {"status": "ok", "patients": patients}
