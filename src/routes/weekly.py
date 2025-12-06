@@ -1,6 +1,7 @@
 """
 Weekly questionnaire endpoints
 """
+from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional
@@ -31,7 +32,9 @@ async def send_weekly(payload: WeeklyPayload, x_patient_code: Optional[str] = He
         async with session_maker() as session:
             async with session.begin():
                 # Get or create patient
-                patient_id = await PatientService.get_or_create_patient(session, patient_code)
+                patient_id_str = await PatientService.get_or_create_patient(session, patient_code)
+                # Convert string to UUID for proper type handling
+                patient_id = UUID(patient_id_str)
                 
                 # Calculate total_score from raw_data if available
                 total_score = None

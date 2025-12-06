@@ -1,6 +1,7 @@
 """
 Questionnaire logic endpoints
 """
+from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional
@@ -73,7 +74,9 @@ async def get_next_questionnaire(x_patient_code: Optional[str] = Header(None)):
                     "reason": "Welcome! Please start with your first weekly questionnaire (LARS)"
                 }
             
-            patient_id = patient_row[0]
+            # Ensure patient_id is UUID type for proper SQL handling
+            patient_id_raw = patient_row[0]
+            patient_id = UUID(str(patient_id_raw)) if patient_id_raw else None
             patient_created_date = patient_row[1] if patient_row[1] is not None else None
             last_weekly_date = patient_row[2] if patient_row[2] is not None else None
             last_monthly_date = patient_row[3] if patient_row[3] is not None else None
