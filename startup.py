@@ -10,7 +10,9 @@ def main():
     
     # Import uvicorn and run the app
     import uvicorn
-    uvicorn.run("app.main:app", host=host, port=port)
+    # Use old app.py structure (app:app) for production stability
+    # New modular structure in app/ folder can be enabled later
+    uvicorn.run("app:app", host=host, port=port)
 
 if __name__ == "__main__":
     main()
