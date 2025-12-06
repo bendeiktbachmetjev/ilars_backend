@@ -10,7 +10,7 @@ def main():
     
     # Import uvicorn and run the app
     import uvicorn
-    uvicorn.run("app:app", host=host, port=port)
+    uvicorn.run("app.main:app", host=host, port=port)
 
 if __name__ == "__main__":
     main()
