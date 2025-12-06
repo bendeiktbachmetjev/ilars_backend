@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, AsyncSession
 from sqlalchemy import text
@@ -47,6 +48,15 @@ class Eq5d5lPayload(BaseModel):
 
 
 app = FastAPI()
+
+# CORS middleware for web interface
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for doctor interface
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _build_async_url(sync_url: str) -> str:
