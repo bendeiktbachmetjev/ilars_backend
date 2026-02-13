@@ -53,7 +53,7 @@ async def get_patients(claims: dict = Depends(get_current_user)):
             # Debug logging to understand filtering issues
             print(f"[getPatients] uid={uid}, doctor_id={doctor_id}, hospital_id={hospital_id}")
             
-            # Get patients from the same hospital with doctor and hospital codes
+            # Get patients from the same hospital with doctor and hospital codes + doctor name
             # Sort: first patients of current doctor, then other patients from same hospital
             result = await execute_with_retry(
                 session,
@@ -65,6 +65,8 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                         p.hospital_id,
                         d.doctor_code,
                         hc.code as hospital_code,
+                        d.first_name,
+                        d.last_name,
                         (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
                         (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
                         (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
@@ -106,13 +108,15 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                     "created_at": row[1].isoformat() if row[1] else None,
                     "doctor_code": row[4] if len(row) > 4 else None,
                     "hospital_code": row[5] if len(row) > 5 else None,
-                    "weekly_count": row[6] or 0 if len(row) > 6 else 0,
-                    "daily_count": row[7] or 0 if len(row) > 7 else 0,
-                    "monthly_count": row[8] or 0 if len(row) > 8 else 0,
-                    "last_lars_score": row[9] if len(row) > 9 and row[9] is not None else None,
-                    "last_lars_date": row[10].isoformat() if len(row) > 10 and row[10] else None,
-                    "last_eq5d5l_score": row[11] if len(row) > 11 and row[11] is not None else None,
-                    "last_eq5d5l_date": row[12].isoformat() if len(row) > 12 and row[12] else None,
+                    "doctor_first_name": row[6] if len(row) > 6 else None,
+                    "doctor_last_name": row[7] if len(row) > 7 else None,
+                    "weekly_count": row[8] or 0 if len(row) > 8 else 0,
+                    "daily_count": row[9] or 0 if len(row) > 9 else 0,
+                    "monthly_count": row[10] or 0 if len(row) > 10 else 0,
+                    "last_lars_score": row[11] if len(row) > 11 and row[11] is not None else None,
+                    "last_lars_date": row[12].isoformat() if len(row) > 12 and row[12] else None,
+                    "last_eq5d5l_score": row[13] if len(row) > 13 and row[13] is not None else None,
+                    "last_eq5d5l_date": row[14].isoformat() if len(row) > 14 and row[14] else None,
                 })
             
             return {"status": "ok", "patients": patients}
