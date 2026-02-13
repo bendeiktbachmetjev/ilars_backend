@@ -246,20 +246,20 @@ async def create_or_update_doctor_profile(
                     text("""
                         UPDATE doctors SET
                             email = COALESCE(:email, email),
-                            first_name = COALESCE(:fn, first_name),
-                            last_name = COALESCE(:ln, last_name),
-                            hospital_id = CASE WHEN :hid IS NOT NULL AND :hid != '' THEN :hid::uuid ELSE hospital_id END,
-                            date_of_birth = COALESCE(:dob, date_of_birth),
-                            doctor_code = COALESCE(:dcode, doctor_code),
+                            first_name = COALESCE(:first_name, first_name),
+                            last_name = COALESCE(:last_name, last_name),
+                            hospital_id = CASE WHEN :hospital_id IS NOT NULL AND :hospital_id != '' THEN :hospital_id::uuid ELSE hospital_id END,
+                            date_of_birth = COALESCE(:date_of_birth, date_of_birth),
+                            doctor_code = COALESCE(:doctor_code, doctor_code),
                             updated_at = now()
                         WHERE firebase_uid = :uid
                     """).bindparams(
                         email=email,
-                        fn=body.first_name or None,
-                        ln=body.last_name or None,
-                        hid=hospital_id_final or None,
-                        dob=dob,
-                        dcode=doctor_code,
+                        first_name=body.first_name or None,
+                        last_name=body.last_name or None,
+                        hospital_id=hospital_id_final or None,
+                        date_of_birth=dob,
+                        doctor_code=doctor_code,
                         uid=uid,
                     )
                 )
