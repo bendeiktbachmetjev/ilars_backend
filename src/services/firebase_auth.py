@@ -71,7 +71,18 @@ def _decode_without_verification(id_token: str) -> Optional[dict]:
                 "verify_aud": False,
             },
         )
-        print("Token decoded without verification (fallback mode)")
+        print(f"Token decoded without verification (fallback mode), keys: {list(decoded.keys())}")
+        
+        # Firebase ID tokens use 'sub' for user ID, not 'uid'
+        # Map 'sub' to 'uid' for compatibility with Firebase Admin SDK format
+        if 'sub' in decoded and 'uid' not in decoded:
+            decoded['uid'] = decoded['sub']
+            print(f"Mapped 'sub' ({decoded['sub']}) to 'uid'")
+        
+        # Also ensure 'email' exists if available
+        if 'email' not in decoded and 'email' in decoded.get('claims', {}):
+            decoded['email'] = decoded['claims']['email']
+        
         return decoded
     except Exception as e:  # pragma: no cover - defensive logging
         print(f"Token decode without verification failed: {e}")

@@ -48,9 +48,12 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
     Get current doctor profile by Firebase UID.
     Returns null profile fields if doctor has not completed profile yet.
     """
-    uid = claims.get("uid", "")
+    # Firebase tokens use 'sub' for user ID, but we map it to 'uid' in verify_id_token
+    # Fallback to 'sub' if 'uid' is not present
+    uid = claims.get("uid") or claims.get("sub", "")
     if not uid:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        print(f"ERROR: No uid or sub in claims: {list(claims.keys())}")
+        raise HTTPException(status_code=401, detail="Invalid token - missing user ID")
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
 
