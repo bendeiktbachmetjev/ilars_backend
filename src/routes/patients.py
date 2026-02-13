@@ -34,35 +34,24 @@ async def get_patients(claims: dict = Depends(get_current_user)):
     
     try:
         async with session_maker() as session:
-            # Get doctor's id, hospital_id, and doctor_code
+            # Get doctor's hospital_id and doctor_id
             doctor_result = await execute_with_retry(
                 session,
-                text("""
-                    SELECT d.id, d.hospital_id, d.doctor_code, hc.code as hospital_code
-                    FROM doctors d
-                    LEFT JOIN hospital_codes hc ON d.hospital_id = hc.hospital_id AND hc.is_active = true
-                    WHERE d.firebase_uid = :uid
-                """).bindparams(uid=uid)
+                text("SELECT id, hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
             )
             if doctor_result is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
             
             doctor_row = doctor_result.first()
-            if not doctor_row or not doctor_row[0]:
-                # Doctor profile not found - return empty list
+            if not doctor_row or not doctor_row[1]:
+                # Doctor has no hospital assigned - return empty list
                 return {"status": "ok", "patients": []}
             
             doctor_id = str(doctor_row[0])
-            hospital_id = str(doctor_row[1]) if doctor_row[1] else None
-            doctor_code = doctor_row[2] if len(doctor_row) > 2 else None
-            hospital_code = doctor_row[3] if len(doctor_row) > 3 else None
+            hospital_id = str(doctor_row[1])
             
-            if not hospital_id or not doctor_code:
-                # Doctor has no hospital or code assigned - return empty list
-                return {"status": "ok", "patients": []}
-            
-            # Get patients from the same hospital
-            # Show current doctor's patients first, then other doctors' patients from the same hospital
+            # Get patients from the same hospital with doctor and hospital codes
+            # Sort: first patients of current doctor, then other patients from same hospital
             result = await execute_with_retry(
                 session,
                 text("""
@@ -73,7 +62,6 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                         p.hospital_id,
                         d.doctor_code,
                         hc.code as hospital_code,
-                        CASE WHEN p.doctor_id = :doctor_id THEN 0 ELSE 1 END as sort_priority,
                         (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
                         (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
                         (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
@@ -85,8 +73,10 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                     LEFT JOIN doctors d ON p.doctor_id = d.id
                     LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
                     WHERE p.hospital_id = :hospital_id
-                    ORDER BY sort_priority ASC, p.created_at DESC
-                """).bindparams(doctor_id=doctor_id, hospital_id=hospital_id)
+                    ORDER BY 
+                        CASE WHEN p.doctor_id = CAST(:doctor_id AS uuid) THEN 0 ELSE 1 END,
+                        p.created_at DESC
+                """).bindparams(hospital_id=hospital_id, doctor_id=doctor_id)
             )
             
             if result is None:
