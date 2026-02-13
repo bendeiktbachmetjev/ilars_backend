@@ -1,6 +1,7 @@
 -- Migration: Add doctor_id and hospital_id to patients table
 -- Patients are now linked to the doctor who created them and their hospital
--- Patient codes will be generated as: {hospital_code}{doctor_code}{random_digits}
+-- Patient codes are completely random (not based on hospital/doctor codes) for security
+-- But patient records store doctor_id and hospital_id for filtering
 
 -- Add columns to patients table
 ALTER TABLE patients 
@@ -14,29 +15,22 @@ CREATE INDEX IF NOT EXISTS idx_patients_doctor_hospital ON patients(doctor_id, h
 
 -- Add comments
 COMMENT ON COLUMN patients.doctor_id IS 'Doctor who created/registered this patient';
-COMMENT ON COLUMN patients.hospital_id IS 'Hospital where the patient was treated/operated';
+COMMENT ON COLUMN patients.hospital_id IS 'Hospital where the patient was treated/operated (same as doctor hospital)';
 
--- Function to generate patient code: {hospital_code}{doctor_code}{random_6_digits}
-CREATE OR REPLACE FUNCTION generate_patient_code(p_hospital_code TEXT, p_doctor_code TEXT) RETURNS TEXT AS $$
+-- Function to generate completely random patient code (12 characters: letters + numbers)
+-- Code is NOT based on hospital or doctor codes for security
+CREATE OR REPLACE FUNCTION generate_patient_code() RETURNS TEXT AS $$
 DECLARE
   new_code TEXT;
-  random_part TEXT;
+  chars TEXT := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; -- Excludes confusing chars (0, O, I, 1)
   exists_check BOOLEAN;
 BEGIN
-  -- Validate inputs
-  IF p_hospital_code IS NULL OR p_doctor_code IS NULL THEN
-    RAISE EXCEPTION 'Hospital code and doctor code are required';
-  END IF;
-  
   LOOP
-    -- Generate 6 random digits
-    random_part := '';
-    FOR i IN 1..6 LOOP
-      random_part := random_part || floor(random() * 10)::int;
+    -- Generate 12-character random code
+    new_code := '';
+    FOR i IN 1..12 LOOP
+      new_code := new_code || substr(chars, floor(random() * length(chars))::int + 1, 1);
     END LOOP;
-    
-    -- Combine: hospital_code (12 chars) + doctor_code (4 chars) + random (6 digits) = 22 chars
-    new_code := upper(p_hospital_code) || upper(p_doctor_code) || random_part;
     
     -- Check if code already exists
     SELECT EXISTS(SELECT 1 FROM patients WHERE patients.patient_code = new_code) INTO exists_check;

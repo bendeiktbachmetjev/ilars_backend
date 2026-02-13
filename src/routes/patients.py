@@ -49,13 +49,17 @@ async def get_patients(claims: dict = Depends(get_current_user)):
             
             hospital_id = str(doctor_row[0])
             
-            # Get patients from the same hospital
+            # Get patients from the same hospital with doctor and hospital codes
             result = await execute_with_retry(
                 session,
                 text("""
                     SELECT 
                         p.patient_code,
                         p.created_at,
+                        p.doctor_id,
+                        p.hospital_id,
+                        d.doctor_code,
+                        hc.code as hospital_code,
                         (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
                         (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
                         (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
@@ -64,6 +68,8 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                         (SELECT health_vas FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_score,
                         (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
                     FROM patients p
+                    LEFT JOIN doctors d ON p.doctor_id = d.id
+                    LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
                     WHERE p.hospital_id = :hospital_id
                     ORDER BY p.created_at DESC
                 """).bindparams(hospital_id=hospital_id)
@@ -81,13 +87,15 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                 patients.append({
                     "patient_code": row[0],
                     "created_at": row[1].isoformat() if row[1] else None,
-                    "weekly_count": row[2] or 0,
-                    "daily_count": row[3] or 0,
-                    "monthly_count": row[4] or 0,
-                    "last_lars_score": row[5] if row[5] is not None else None,
-                    "last_lars_date": row[6].isoformat() if row[6] else None,
-                    "last_eq5d5l_score": row[7] if row[7] is not None else None,
-                    "last_eq5d5l_date": row[8].isoformat() if row[8] else None,
+                    "doctor_code": row[4] if len(row) > 4 else None,
+                    "hospital_code": row[5] if len(row) > 5 else None,
+                    "weekly_count": row[6] or 0 if len(row) > 6 else 0,
+                    "daily_count": row[7] or 0 if len(row) > 7 else 0,
+                    "monthly_count": row[8] or 0 if len(row) > 8 else 0,
+                    "last_lars_score": row[9] if len(row) > 9 and row[9] is not None else None,
+                    "last_lars_date": row[10].isoformat() if len(row) > 10 and row[10] else None,
+                    "last_eq5d5l_score": row[11] if len(row) > 11 and row[11] is not None else None,
+                    "last_eq5d5l_date": row[12].isoformat() if len(row) > 12 and row[12] else None,
                 })
             
             return {"status": "ok", "patients": patients}
@@ -330,13 +338,10 @@ async def create_patient(claims: dict = Depends(get_current_user)):
             if not hospital_code:
                 raise HTTPException(status_code=400, detail="Hospital code not found")
             
-            # Generate patient code: {hospital_code}{doctor_code}{random_6_digits}
+            # Generate completely random patient code (not based on hospital/doctor codes)
             code_result = await execute_with_retry(
                 session,
-                text("SELECT generate_patient_code(:hcode, :dcode)").bindparams(
-                    hcode=hospital_code,
-                    dcode=doctor_code
-                )
+                text("SELECT generate_patient_code()")
             )
             if not code_result:
                 raise HTTPException(status_code=500, detail="Failed to generate patient code")
@@ -368,6 +373,8 @@ async def create_patient(claims: dict = Depends(get_current_user)):
                 "status": "ok",
                 "patient_code": patient_code,
                 "created_at": created_at.isoformat() if created_at else None,
+                "doctor_code": doctor_code,
+                "hospital_code": hospital_code,
                 "message": "Patient created successfully"
             }
     except HTTPException:
