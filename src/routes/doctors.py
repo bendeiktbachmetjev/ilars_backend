@@ -280,17 +280,17 @@ async def create_or_update_doctor_profile(
                     session,
                     text("""
                         INSERT INTO doctors (firebase_uid, email, first_name, last_name, hospital_id, date_of_birth, doctor_code)
-                        VALUES (:uid, :email, :fn, :ln,
-                                CASE WHEN :hid IS NOT NULL AND :hid != '' THEN :hid::uuid ELSE NULL END,
-                                :dob, :dcode)
+                        VALUES (:uid, :email, :first_name, :last_name,
+                                CASE WHEN :hospital_id IS NOT NULL AND :hospital_id != '' THEN :hospital_id::uuid ELSE NULL END,
+                                :date_of_birth, :doctor_code)
                     """).bindparams(
                         uid=uid,
                         email=email,
-                        fn=body.first_name or None,
-                        ln=body.last_name or None,
-                        hid=hospital_id_final or None,
-                        dob=dob,
-                        dcode=doctor_code,
+                        first_name=body.first_name or None,
+                        last_name=body.last_name or None,
+                        hospital_id=hospital_id_final or None,
+                        date_of_birth=dob,
+                        doctor_code=doctor_code,
                     )
                 )
                 await session.commit()
