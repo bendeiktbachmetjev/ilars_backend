@@ -26,37 +26,37 @@ CREATE INDEX IF NOT EXISTS idx_doctors_code ON doctors (doctor_code);
 -- Function to generate complex hospital code (12 characters: letters + numbers)
 CREATE OR REPLACE FUNCTION generate_hospital_code() RETURNS TEXT AS $$
 DECLARE
-  code TEXT;
+  new_code TEXT;
   chars TEXT := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; -- Excludes confusing chars (0, O, I, 1)
   exists_check BOOLEAN;
 BEGIN
   LOOP
     -- Generate 12-character code
-    code := '';
+    new_code := '';
     FOR i IN 1..12 LOOP
-      code := code || substr(chars, floor(random() * length(chars))::int + 1, 1);
+      new_code := new_code || substr(chars, floor(random() * length(chars))::int + 1, 1);
     END LOOP;
     
     -- Check if code already exists
-    SELECT EXISTS(SELECT 1 FROM hospital_codes WHERE code = generate_hospital_code.code) INTO exists_check;
+    SELECT EXISTS(SELECT 1 FROM hospital_codes WHERE hospital_codes.code = new_code) INTO exists_check;
     
     -- Exit loop if code is unique
     EXIT WHEN NOT exists_check;
   END LOOP;
   
-  RETURN code;
+  RETURN new_code;
 END;
 $$ LANGUAGE plpgsql;
 
 -- Function to generate unique doctor code (4 uppercase letters)
 CREATE OR REPLACE FUNCTION generate_doctor_code() RETURNS TEXT AS $$
 DECLARE
-  code TEXT;
+  new_code TEXT;
   exists_check BOOLEAN;
 BEGIN
   LOOP
     -- Generate 4 uppercase letters (A-Z)
-    code := upper(
+    new_code := upper(
       chr(65 + floor(random() * 26)::int) ||
       chr(65 + floor(random() * 26)::int) ||
       chr(65 + floor(random() * 26)::int) ||
@@ -64,13 +64,13 @@ BEGIN
     );
     
     -- Check if code already exists
-    SELECT EXISTS(SELECT 1 FROM doctors WHERE doctor_code = code) INTO exists_check;
+    SELECT EXISTS(SELECT 1 FROM doctors WHERE doctors.doctor_code = new_code) INTO exists_check;
     
     -- Exit loop if code is unique
     EXIT WHEN NOT exists_check;
   END LOOP;
   
-  RETURN code;
+  RETURN new_code;
 END;
 $$ LANGUAGE plpgsql;
 
