@@ -1,22 +1,24 @@
 """
 Patient endpoints for doctor interface
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
 from src.utils.validators import validate_patient_code
+from src.routes.doctors import get_current_user
 
 router = APIRouter()
 
 
 @router.get("/getPatients")
-async def get_patients():
+async def get_patients(claims: dict = Depends(get_current_user)):
     """
-    Get list of all patients for doctor interface.
+    Get list of patients for the current doctor's hospital.
     Returns patient codes and basic info (no PII).
+    Only shows patients from the doctor's hospital.
     """
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -25,8 +27,29 @@ async def get_patients():
     if not session_maker:
         raise HTTPException(status_code=503, detail="Database not configured")
     
+    # Get doctor's hospital_id
+    uid = claims.get("uid") or claims.get("sub", "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
     try:
         async with session_maker() as session:
+            # Get doctor's hospital_id
+            doctor_result = await execute_with_retry(
+                session,
+                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+            )
+            if doctor_result is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+            
+            doctor_row = doctor_result.first()
+            if not doctor_row or not doctor_row[0]:
+                # Doctor has no hospital assigned - return empty list
+                return {"status": "ok", "patients": []}
+            
+            hospital_id = str(doctor_row[0])
+            
+            # Get patients from the same hospital
             result = await execute_with_retry(
                 session,
                 text("""
@@ -41,8 +64,9 @@ async def get_patients():
                         (SELECT health_vas FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_score,
                         (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
                     FROM patients p
+                    WHERE p.hospital_id = :hospital_id
                     ORDER BY p.created_at DESC
-                """)
+                """).bindparams(hospital_id=hospital_id)
             )
             
             if result is None:
@@ -82,10 +106,14 @@ async def get_patients():
 
 
 @router.get("/getPatientDetail")
-async def get_patient_detail(patient_code: str = Query(..., description="Patient code")):
+async def get_patient_detail(
+    patient_code: str = Query(..., description="Patient code"),
+    claims: dict = Depends(get_current_user)
+):
     """
     Get detailed patient data for charts and graphs.
     Returns LARS scores, EQ-5D-5L scores, daily entries with food/drink consumption.
+    Only accessible if patient belongs to the doctor's hospital.
     """
     patient_code = validate_patient_code(patient_code)
     
@@ -96,12 +124,31 @@ async def get_patient_detail(patient_code: str = Query(..., description="Patient
     if not session_maker:
         raise HTTPException(status_code=503, detail="Database not configured")
     
+    # Get doctor's hospital_id
+    uid = claims.get("uid") or claims.get("sub", "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
     try:
         async with session_maker() as session:
-            # Get patient_id
+            # Get doctor's hospital_id
+            doctor_result = await execute_with_retry(
+                session,
+                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+            )
+            if doctor_result is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+            
+            doctor_row = doctor_result.first()
+            if not doctor_row or not doctor_row[0]:
+                raise HTTPException(status_code=403, detail="Doctor has no hospital assigned")
+            
+            hospital_id = str(doctor_row[0])
+            
+            # Get patient_id and verify it belongs to the same hospital
             patient_res = await execute_with_retry(
                 session,
-                text("SELECT id, created_at FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+                text("SELECT id, created_at, hospital_id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
             )
             if patient_res is None:
                 return JSONResponse(
@@ -115,6 +162,11 @@ async def get_patient_detail(patient_code: str = Query(..., description="Patient
             
             patient_id = patient_row[0]
             created_at = patient_row[1]
+            patient_hospital_id = str(patient_row[2]) if patient_row[2] else None
+            
+            # Verify patient belongs to the same hospital as doctor
+            if patient_hospital_id != hospital_id:
+                raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
             
             # Get LARS scores over time
             lars_res = await execute_with_retry(
