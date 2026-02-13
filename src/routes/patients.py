@@ -61,8 +61,8 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                 # Doctor has no hospital or code assigned - return empty list
                 return {"status": "ok", "patients": []}
             
-            # Get patients with matching doctor_code and hospital_code
-            # Filter by doctor_id (which corresponds to doctor_code) and hospital_id (which corresponds to hospital_code)
+            # Get patients from the same hospital
+            # Show current doctor's patients first, then other doctors' patients from the same hospital
             result = await execute_with_retry(
                 session,
                 text("""
@@ -73,6 +73,7 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                         p.hospital_id,
                         d.doctor_code,
                         hc.code as hospital_code,
+                        CASE WHEN p.doctor_id = :doctor_id THEN 0 ELSE 1 END as sort_priority,
                         (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
                         (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
                         (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
@@ -83,8 +84,8 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                     FROM patients p
                     LEFT JOIN doctors d ON p.doctor_id = d.id
                     LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
-                    WHERE p.doctor_id = :doctor_id AND p.hospital_id = :hospital_id
-                    ORDER BY p.created_at DESC
+                    WHERE p.hospital_id = :hospital_id
+                    ORDER BY sort_priority ASC, p.created_at DESC
                 """).bindparams(doctor_id=doctor_id, hospital_id=hospital_id)
             )
             
