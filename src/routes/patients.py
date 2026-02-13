@@ -276,3 +276,110 @@ async def get_patient_detail(
             content={"status": "error", "detail": error_msg, "error_type": error_type}
         )
 
+
+@router.post("/createPatient")
+async def create_patient(claims: dict = Depends(get_current_user)):
+    """
+    Create a new patient code for the current doctor's hospital.
+    Returns the generated patient code that can be given to the patient.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # Get doctor info
+    uid = claims.get("uid") or claims.get("sub", "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    try:
+        async with session_maker() as session:
+            # Get doctor's hospital_code and doctor_code
+            doctor_result = await execute_with_retry(
+                session,
+                text("""
+                    SELECT d.id, d.hospital_id, d.doctor_code, hc.code as hospital_code
+                    FROM doctors d
+                    LEFT JOIN hospitals h ON d.hospital_id = h.id
+                    LEFT JOIN hospital_codes hc ON h.id = hc.hospital_id AND hc.is_active = true
+                    WHERE d.firebase_uid = :uid
+                    LIMIT 1
+                """).bindparams(uid=uid)
+            )
+            if doctor_result is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+            
+            doctor_row = doctor_result.first()
+            if not doctor_row:
+                raise HTTPException(status_code=404, detail="Doctor profile not found")
+            
+            doctor_id = str(doctor_row[0])
+            hospital_id = str(doctor_row[1]) if doctor_row[1] else None
+            doctor_code = doctor_row[2] if len(doctor_row) > 2 else None
+            hospital_code = doctor_row[3] if len(doctor_row) > 3 else None
+            
+            if not hospital_id:
+                raise HTTPException(status_code=400, detail="Doctor has no hospital assigned")
+            
+            if not doctor_code:
+                raise HTTPException(status_code=400, detail="Doctor code not found")
+            
+            if not hospital_code:
+                raise HTTPException(status_code=400, detail="Hospital code not found")
+            
+            # Generate patient code: {hospital_code}{doctor_code}{random_6_digits}
+            code_result = await execute_with_retry(
+                session,
+                text("SELECT generate_patient_code(:hcode, :dcode)").bindparams(
+                    hcode=hospital_code,
+                    dcode=doctor_code
+                )
+            )
+            if not code_result:
+                raise HTTPException(status_code=500, detail="Failed to generate patient code")
+            
+            patient_code = code_result.scalar()
+            
+            # Create patient with doctor_id and hospital_id
+            patient_result = await execute_with_retry(
+                session,
+                text("""
+                    INSERT INTO patients (patient_code, doctor_id, hospital_id)
+                    VALUES (:code, CAST(:doctor_id AS uuid), CAST(:hospital_id AS uuid))
+                    RETURNING id, created_at
+                """).bindparams(
+                    code=patient_code,
+                    doctor_id=doctor_id,
+                    hospital_id=hospital_id
+                )
+            )
+            await session.commit()
+            
+            if not patient_result:
+                raise HTTPException(status_code=500, detail="Failed to create patient")
+            
+            patient_row = patient_result.first()
+            created_at = patient_row[1] if patient_row else None
+            
+            return {
+                "status": "ok",
+                "patient_code": patient_code,
+                "created_at": created_at.isoformat() if created_at else None,
+                "message": "Patient created successfully"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = type(e).__name__
+        print(f"Error in createPatient: {error_type}: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": error_msg, "error_type": error_type}
+        )
+
