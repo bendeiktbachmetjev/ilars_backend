@@ -241,6 +241,7 @@ async def create_or_update_doctor_profile(
                     if code_result:
                         doctor_code = code_result.scalar()
                 
+                # Use positional parameters to avoid SQLAlchemy binding issues
                 await execute_with_retry(
                     session,
                     text("""
@@ -248,7 +249,11 @@ async def create_or_update_doctor_profile(
                             email = COALESCE(:email, email),
                             first_name = COALESCE(:first_name, first_name),
                             last_name = COALESCE(:last_name, last_name),
-                            hospital_id = CASE WHEN :hospital_id IS NOT NULL AND :hospital_id != '' THEN :hospital_id::uuid ELSE hospital_id END,
+                            hospital_id = CASE 
+                                WHEN :hospital_id IS NOT NULL AND :hospital_id != '' 
+                                THEN CAST(:hospital_id AS uuid) 
+                                ELSE hospital_id 
+                            END,
                             date_of_birth = COALESCE(:date_of_birth, date_of_birth),
                             doctor_code = COALESCE(:doctor_code, doctor_code),
                             updated_at = now()
@@ -281,7 +286,11 @@ async def create_or_update_doctor_profile(
                     text("""
                         INSERT INTO doctors (firebase_uid, email, first_name, last_name, hospital_id, date_of_birth, doctor_code)
                         VALUES (:uid, :email, :first_name, :last_name,
-                                CASE WHEN :hospital_id IS NOT NULL AND :hospital_id != '' THEN :hospital_id::uuid ELSE NULL END,
+                                CASE 
+                                    WHEN :hospital_id IS NOT NULL AND :hospital_id != '' 
+                                    THEN CAST(:hospital_id AS uuid) 
+                                    ELSE NULL 
+                                END,
                                 :date_of_birth, :doctor_code)
                     """).bindparams(
                         uid=uid,
