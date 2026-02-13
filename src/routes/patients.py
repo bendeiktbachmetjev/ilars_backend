@@ -34,22 +34,35 @@ async def get_patients(claims: dict = Depends(get_current_user)):
     
     try:
         async with session_maker() as session:
-            # Get doctor's hospital_id
+            # Get doctor's id, hospital_id, and doctor_code
             doctor_result = await execute_with_retry(
                 session,
-                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+                text("""
+                    SELECT d.id, d.hospital_id, d.doctor_code, hc.code as hospital_code
+                    FROM doctors d
+                    LEFT JOIN hospital_codes hc ON d.hospital_id = hc.hospital_id AND hc.is_active = true
+                    WHERE d.firebase_uid = :uid
+                """).bindparams(uid=uid)
             )
             if doctor_result is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
             
             doctor_row = doctor_result.first()
             if not doctor_row or not doctor_row[0]:
-                # Doctor has no hospital assigned - return empty list
+                # Doctor profile not found - return empty list
                 return {"status": "ok", "patients": []}
             
-            hospital_id = str(doctor_row[0])
+            doctor_id = str(doctor_row[0])
+            hospital_id = str(doctor_row[1]) if doctor_row[1] else None
+            doctor_code = doctor_row[2] if len(doctor_row) > 2 else None
+            hospital_code = doctor_row[3] if len(doctor_row) > 3 else None
             
-            # Get patients from the same hospital with doctor and hospital codes
+            if not hospital_id or not doctor_code:
+                # Doctor has no hospital or code assigned - return empty list
+                return {"status": "ok", "patients": []}
+            
+            # Get patients with matching doctor_code and hospital_code
+            # Filter by doctor_id (which corresponds to doctor_code) and hospital_id (which corresponds to hospital_code)
             result = await execute_with_retry(
                 session,
                 text("""
@@ -70,9 +83,9 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                     FROM patients p
                     LEFT JOIN doctors d ON p.doctor_id = d.id
                     LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
-                    WHERE p.hospital_id = :hospital_id
+                    WHERE p.doctor_id = :doctor_id AND p.hospital_id = :hospital_id
                     ORDER BY p.created_at DESC
-                """).bindparams(hospital_id=hospital_id)
+                """).bindparams(doctor_id=doctor_id, hospital_id=hospital_id)
             )
             
             if result is None:
