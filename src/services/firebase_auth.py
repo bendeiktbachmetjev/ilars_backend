@@ -85,13 +85,26 @@ def verify_id_token(id_token: str) -> Optional[dict]:
     Returns:
         dict with uid, email, etc. or None if invalid.
     """
+    if not id_token or not id_token.strip():
+        print("Empty token provided")
+        return None
+    
+    print(f"Attempting to verify token (length: {len(id_token)})")
+    
     # First try full Firebase verification if Admin SDK is configured.
     if _init_firebase():
         try:
             decoded = auth.verify_id_token(id_token)
+            print("Token verified via Firebase Admin SDK")
             return decoded
         except Exception as e:  # pragma: no cover - defensive logging
             print(f"Token verification via Firebase Admin failed: {e}")
 
     # Fallback: decode without verification (development / misconfigured env).
-    return _decode_without_verification(id_token)
+    print("Attempting fallback token decoding")
+    decoded = _decode_without_verification(id_token)
+    if decoded:
+        print(f"Token decoded via fallback, uid: {decoded.get('uid', 'N/A')}")
+    else:
+        print("Fallback token decoding also failed")
+    return decoded

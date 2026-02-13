@@ -29,9 +29,16 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Empty token")
+    
+    print(f"Verifying token (length: {len(token)})")
     decoded = verify_id_token(token)
     if not decoded:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        print("Token verification returned None")
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    print(f"Token verified successfully, uid: {decoded.get('uid', 'N/A')}")
     return decoded
 
 
