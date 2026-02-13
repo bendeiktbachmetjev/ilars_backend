@@ -77,7 +77,7 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                     LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
                     WHERE 
                         p.doctor_id = CAST(:doctor_id AS uuid)
-                        OR p.hospital_id = :hospital_id
+                        OR p.hospital_id = CAST(:hospital_id AS uuid)
                     ORDER BY 
                         CASE WHEN p.doctor_id = CAST(:doctor_id AS uuid) THEN 0 ELSE 1 END,
                         p.created_at DESC
