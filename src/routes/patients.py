@@ -1,9 +1,10 @@
 """
 Patient endpoints for doctor interface
 """
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from pydantic import BaseModel
 
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
@@ -14,11 +15,16 @@ router = APIRouter()
 
 
 @router.get("/getPatients")
-async def get_patients(claims: dict = Depends(get_current_user)):
+async def get_patients(
+    status: str = Query("active", description="active | inactive | all"),
+    claims: dict = Depends(get_current_user)
+):
     """
     Get list of patients for the current doctor's hospital.
     Returns patient codes and basic info (no PII).
-    Only shows patients from the doctor's hospital.
+    status=active (default): only active patients
+    status=inactive: only inactive patients (archived)
+    status=all: all patients with status field
     """
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -53,16 +59,25 @@ async def get_patients(claims: dict = Depends(get_current_user)):
             # Debug logging to understand filtering issues
             print(f"[getPatients] uid={uid}, doctor_id={doctor_id}, hospital_id={hospital_id}")
             
+            # Build status filter
+            status_filter = ""
+            if status == "active":
+                status_filter = "AND p.status = 'active'"
+            elif status == "inactive":
+                status_filter = "AND p.status = 'inactive'"
+
             # Get patients from the same hospital with doctor and hospital codes + doctor name
             # Sort: first patients of current doctor, then other patients from same hospital
             result = await execute_with_retry(
                 session,
-                text("""
+                text(f"""
                     SELECT 
                         p.patient_code,
                         p.created_at,
                         p.doctor_id,
                         p.hospital_id,
+                        p.status,
+                        p.status_reason,
                         d.doctor_code,
                         hc.code as hospital_code,
                         d.first_name,
@@ -78,8 +93,8 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                     LEFT JOIN doctors d ON p.doctor_id = d.id
                     LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
                     WHERE 
-                        p.doctor_id = CAST(:doctor_id AS uuid)
-                        OR p.hospital_id = CAST(:hospital_id AS uuid)
+                        (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid))
+                        {status_filter}
                     ORDER BY 
                         CASE WHEN p.doctor_id = CAST(:doctor_id AS uuid) THEN 0 ELSE 1 END,
                         p.created_at DESC
@@ -106,17 +121,19 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                 patients.append({
                     "patient_code": row[0],
                     "created_at": row[1].isoformat() if row[1] else None,
-                    "doctor_code": row[4] if len(row) > 4 else None,
-                    "hospital_code": row[5] if len(row) > 5 else None,
-                    "doctor_first_name": row[6] if len(row) > 6 else None,
-                    "doctor_last_name": row[7] if len(row) > 7 else None,
-                    "weekly_count": row[8] or 0 if len(row) > 8 else 0,
-                    "daily_count": row[9] or 0 if len(row) > 9 else 0,
-                    "monthly_count": row[10] or 0 if len(row) > 10 else 0,
-                    "last_lars_score": row[11] if len(row) > 11 and row[11] is not None else None,
-                    "last_lars_date": row[12].isoformat() if len(row) > 12 and row[12] else None,
-                    "last_eq5d5l_score": row[13] if len(row) > 13 and row[13] is not None else None,
-                    "last_eq5d5l_date": row[14].isoformat() if len(row) > 14 and row[14] else None,
+                    "status": row[4] if len(row) > 4 else "active",
+                    "status_reason": row[5] if len(row) > 5 else None,
+                    "doctor_code": row[6] if len(row) > 6 else None,
+                    "hospital_code": row[7] if len(row) > 7 else None,
+                    "doctor_first_name": row[8] if len(row) > 8 else None,
+                    "doctor_last_name": row[9] if len(row) > 9 else None,
+                    "weekly_count": row[10] or 0 if len(row) > 10 else 0,
+                    "daily_count": row[11] or 0 if len(row) > 11 else 0,
+                    "monthly_count": row[12] or 0 if len(row) > 12 else 0,
+                    "last_lars_score": row[13] if len(row) > 13 and row[13] is not None else None,
+                    "last_lars_date": row[14].isoformat() if len(row) > 14 and row[14] else None,
+                    "last_eq5d5l_score": row[15] if len(row) > 15 and row[15] is not None else None,
+                    "last_eq5d5l_date": row[16].isoformat() if len(row) > 16 and row[16] else None,
                 })
             
             return {"status": "ok", "patients": patients}
@@ -177,7 +194,7 @@ async def get_patient_detail(
             # Get patient_id and verify it belongs to the same hospital
             patient_res = await execute_with_retry(
                 session,
-                text("SELECT id, created_at, hospital_id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+                text("SELECT id, created_at, hospital_id, status, status_reason FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
             )
             if patient_res is None:
                 return JSONResponse(
@@ -192,6 +209,8 @@ async def get_patient_detail(
             patient_id = patient_row[0]
             created_at = patient_row[1]
             patient_hospital_id = str(patient_row[2]) if patient_row[2] else None
+            patient_status = patient_row[3] if len(patient_row) > 3 else "active"
+            patient_status_reason = patient_row[4] if len(patient_row) > 4 else None
             
             # Verify patient belongs to the same hospital as doctor
             if patient_hospital_id != hospital_id:
@@ -288,6 +307,8 @@ async def get_patient_detail(
                 "status": "ok",
                 "patient_code": patient_code,
                 "created_at": created_at.isoformat() if created_at else None,
+                "patient_status": patient_status,
+                "patient_status_reason": patient_status_reason,
                 "lars_scores": lars_data,
                 "eq5d5l_scores": eq5d5l_data,
                 "daily_entries": daily_data,
@@ -405,6 +426,100 @@ async def create_patient(claims: dict = Depends(get_current_user)):
         error_msg = str(e)
         error_type = type(e).__name__
         print(f"Error in createPatient: {error_type}: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": error_msg, "error_type": error_type}
+        )
+
+
+class UpdatePatientStatusBody(BaseModel):
+    patient_code: str
+    status: str  # 'active' | 'inactive'
+    status_reason: str | None = None
+
+
+@router.post("/updatePatientStatus")
+async def update_patient_status(
+    body: UpdatePatientStatusBody = Body(...),
+    claims: dict = Depends(get_current_user)
+):
+    """
+    Update patient status (active/inactive).
+    Only doctor from same hospital can update.
+    """
+    patient_code = validate_patient_code(body.patient_code)
+    if body.status not in ("active", "inactive"):
+        raise HTTPException(status_code=400, detail="status must be 'active' or 'inactive'")
+
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    uid = claims.get("uid") or claims.get("sub", "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    try:
+        async with session_maker() as session:
+            doctor_result = await execute_with_retry(
+                session,
+                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+            )
+            if doctor_result is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+
+            doctor_row = doctor_result.first()
+            if not doctor_row or not doctor_row[0]:
+                raise HTTPException(status_code=403, detail="Doctor has no hospital assigned")
+
+            hospital_id = str(doctor_row[0])
+
+            patient_res = await execute_with_retry(
+                session,
+                text("SELECT id, hospital_id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+            )
+            if patient_res is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+
+            patient_row = patient_res.first()
+            if not patient_row:
+                raise HTTPException(status_code=404, detail="Patient not found")
+
+            patient_hospital_id = str(patient_row[1]) if patient_row[1] else None
+            if patient_hospital_id != hospital_id:
+                raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
+
+            await execute_with_retry(
+                session,
+                text("""
+                    UPDATE patients
+                    SET status = :status, status_reason = :status_reason
+                    WHERE patient_code = :code
+                """).bindparams(
+                    code=patient_code,
+                    status=body.status,
+                    status_reason=body.status_reason or None
+                )
+            )
+            await session.commit()
+
+            return {
+                "status": "ok",
+                "patient_code": patient_code,
+                "patient_status": body.status,
+                "message": "Patient status updated"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = type(e).__name__
+        print(f"Error in updatePatientStatus: {error_type}: {error_msg}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
