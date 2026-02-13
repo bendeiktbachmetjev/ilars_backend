@@ -49,6 +49,9 @@ async def get_patients(claims: dict = Depends(get_current_user)):
             
             doctor_id = str(doctor_row[0])
             hospital_id = str(doctor_row[1])
+
+            # Debug logging to understand filtering issues
+            print(f"[getPatients] uid={uid}, doctor_id={doctor_id}, hospital_id={hospital_id}")
             
             # Get patients from the same hospital with doctor and hospital codes
             # Sort: first patients of current doctor, then other patients from same hospital
@@ -88,6 +91,14 @@ async def get_patients(claims: dict = Depends(get_current_user)):
                 )
             
             rows = result.fetchall()
+            print(f"[getPatients] fetched_rows={len(rows)}")
+            if rows:
+                # Log first row's doctor/hospital linkage for debugging
+                first = rows[0]
+                try:
+                    print(f"[getPatients] first_row: patient_code={first[0]}, doctor_id={first[2]}, hospital_id={first[3]}")
+                except Exception as _e:
+                    print(f"[getPatients] first_row debug failed: {type(_e).__name__}: {_e}")
             patients = []
             for row in rows:
                 patients.append({
