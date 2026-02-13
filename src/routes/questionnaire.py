@@ -18,12 +18,17 @@ router = APIRouter()
 @router.get("/getNextQuestionnaire")
 async def get_next_questionnaire(x_patient_code: Optional[str] = Header(None)):
     """
-    Determine which questionnaire should be filled today based on:
-    - EQ-5D-5L: at 2 weeks, 1 month, 3 months, 6 months, 12 months after patient registration
-    - Weekly (LARS): once per week (every 7 days)
-    - Monthly: once per month (~30 days)
-    - Daily: if no mandatory questionnaires are due
-    
+    Determine which questionnaire should be filled today. At most ONE questionnaire is
+    suggested per day. When several are overdue (e.g. user skipped a month), we pick
+    the one that was due FIRST (earliest due date), so spacing stays logical: e.g.
+    weekly that was due 4 weeks ago today, then tomorrow monthly, then next weekly in 7 days.
+
+    Schedule rules:
+    - EQ-5D-5L: at 2 weeks, 1 month, 3 months, 6 months, 12 months after registration
+    - Weekly (LARS): every 7 days after last completion
+    - Monthly: every 28 days after last completion
+    - Daily: when no mandatory questionnaire is due
+
     Returns questionnaire type: "daily", "weekly", "monthly", "eq5d5l", or null if all done.
     """
     patient_code = validate_patient_code(x_patient_code)
@@ -83,107 +88,88 @@ async def get_next_questionnaire(x_patient_code: Optional[str] = Header(None)):
             last_eq5d5l_date = patient_row[4] if patient_row[4] is not None else None
             last_daily_date = patient_row[5] if patient_row[5] is not None else None
             
-            # Determine next questionnaire using priority logic
-            questionnaire_type = None
-            reason = None
-            
-            # Priority 1: EQ-5D-5L (quality of life) - scheduled milestones
-            if patient_created_date:
+            # Build list of (questionnaire_type, due_date, reason) for each type that is due.
+            # We return exactly ONE questionnaire per day: the one with the EARLIEST due date.
+            # So if user skipped a month, they get the questionnaire that was due first, then
+            # next day the next one — spacing is preserved (e.g. next weekly in 7 days after filling).
+            type_priority = {"eq5d5l": 0, "weekly": 1, "monthly": 2, "daily": 3}  # tie-breaker
+            candidates = []  # list of (due_date, priority, type, reason)
+
+            # EQ-5D-5L: due at milestone dates (2w, 1m, 3m, 6m, 12m); window: milestone-3 .. milestone+7
+            if patient_created_date and patient_id:
                 days_since_start = (today - patient_created_date).days
-                eq5d5l_milestones = [14, 30, 90, 180, 365]  # 2 weeks, 1 month, 3 months, 6 months, 12 months
-                
+                eq5d5l_milestones = [14, 30, 90, 180, 365]
                 milestones_to_check = []
                 for milestone_days in eq5d5l_milestones:
                     milestone_date = patient_created_date + timedelta(days=milestone_days)
-                    if today >= milestone_date - timedelta(days=3) and days_since_start >= milestone_days - 3:
-                        milestones_to_check.append((milestone_days, milestone_date))
-                
+                    window_start = milestone_date - timedelta(days=3)
+                    window_end = milestone_date + timedelta(days=7)
+                    if today >= window_start and days_since_start >= milestone_days - 3:
+                        milestones_to_check.append((milestone_days, milestone_date, window_start, window_end))
+
                 if milestones_to_check:
-                    date_ranges = []
-                    for milestone_days, milestone_date in milestones_to_check:
-                        window_start = milestone_date - timedelta(days=3)
-                        window_end = milestone_date + timedelta(days=7)
-                        date_ranges.append((milestone_days, milestone_date, window_start, window_end))
-                    
-                    if date_ranges:
-                        min_date = min(range_item[2] for range_item in date_ranges)
-                        max_date = max(range_item[3] for range_item in date_ranges)
-                        
-                        check_res = await execute_with_retry(
-                            session,
-                            text("""
-                                SELECT entry_date
-                                FROM eq5d5l_entries
-                                WHERE patient_id = :patient_id
-                                    AND entry_date >= :min_date
-                                    AND entry_date <= :max_date
-                            """).bindparams(
-                                patient_id=patient_id,
-                                min_date=min_date,
-                                max_date=max_date
-                            )
-                        )
-                        
-                        filled_dates = set()
-                        if check_res:
-                            filled_dates = {row[0] for row in check_res.fetchall()}
-                        
-                        for milestone_days, milestone_date, window_start, window_end in date_ranges:
-                            milestone_filled = any(
-                                window_start <= filled_date <= window_end 
-                                for filled_date in filled_dates
-                            )
-                            
-                            if not milestone_filled:
-                                questionnaire_type = "eq5d5l"
-                                reason = f"EQ-5D-5L milestone at {milestone_days} days ({'due' if days_since_start >= milestone_days else 'upcoming'})"
-                                break
-            
-            # Priority 2: Weekly (LARS) - once per week
-            if not questionnaire_type:
-                if last_weekly_date:
-                    days_since_weekly = (today - last_weekly_date).days
-                    if days_since_weekly >= 7:
-                        questionnaire_type = "weekly"
-                        reason = "Weekly questionnaire due (7 days passed)"
-                else:
-                    questionnaire_type = "weekly"
-                    reason = "First weekly questionnaire"
-            
-            # Priority 3: Monthly - once per month
-            if not questionnaire_type:
-                if last_monthly_date:
-                    days_since_monthly = (today - last_monthly_date).days
-                    if days_since_monthly >= 28:
-                        weekly_due_today = False
-                        if last_weekly_date:
-                            days_since_weekly = (today - last_weekly_date).days
-                            if days_since_weekly >= 7:
-                                weekly_due_today = True
-                        
-                        if not weekly_due_today:
-                            questionnaire_type = "monthly"
-                            reason = "Monthly questionnaire due (28+ days passed)"
-                else:
-                    weekly_due = False
-                    if last_weekly_date:
-                        days_since_weekly = (today - last_weekly_date).days
-                        if days_since_weekly >= 7:
-                            weekly_due = True
-                    
-                    if not weekly_due:
-                        questionnaire_type = "monthly"
-                        reason = "First monthly questionnaire"
-            
-            # Priority 4: Daily - if no mandatory questionnaires are due
-            if not questionnaire_type:
-                if last_daily_date:
-                    if (today - last_daily_date).days >= 1:
-                        questionnaire_type = "daily"
-                        reason = "Daily questionnaire available"
-                else:
-                    questionnaire_type = "daily"
-                    reason = "First daily questionnaire"
+                    min_date = min(m[2] for m in milestones_to_check)
+                    max_date = max(m[3] for m in milestones_to_check)
+                    check_res = await execute_with_retry(
+                        session,
+                        text("""
+                            SELECT entry_date FROM eq5d5l_entries
+                            WHERE patient_id = :patient_id AND entry_date >= :min_date AND entry_date <= :max_date
+                        """).bindparams(patient_id=patient_id, min_date=min_date, max_date=max_date)
+                    )
+                    filled_dates = set()
+                    if check_res:
+                        filled_dates = {row[0] for row in check_res.fetchall()}
+                    for milestone_days, milestone_date, window_start, window_end in milestones_to_check:
+                        if any(window_start <= d <= window_end for d in filled_dates):
+                            continue
+                        candidates.append((
+                            milestone_date,
+                            type_priority["eq5d5l"],
+                            "eq5d5l",
+                            f"EQ-5D-5L milestone at {milestone_days} days ({'due' if today >= milestone_date else 'upcoming'})"
+                        ))
+                        break  # only first unfilled milestone
+
+            # Weekly: due 7 days after last fill, or from registration
+            weekly_due_date = (last_weekly_date + timedelta(days=7)) if last_weekly_date else (patient_created_date or today)
+            if today >= weekly_due_date:
+                candidates.append((
+                    weekly_due_date,
+                    type_priority["weekly"],
+                    "weekly",
+                    "Weekly questionnaire due (7 days passed)" if last_weekly_date else "First weekly questionnaire (LARS)"
+                ))
+
+            # Monthly: due 28 days after last fill, or from registration
+            monthly_due_date = (last_monthly_date + timedelta(days=28)) if last_monthly_date else (patient_created_date or today)
+            if today >= monthly_due_date:
+                candidates.append((
+                    monthly_due_date,
+                    type_priority["monthly"],
+                    "monthly",
+                    "Monthly questionnaire due (28+ days passed)" if last_monthly_date else "First monthly questionnaire"
+                ))
+
+            # Daily: due next day after last fill, or today if never filled
+            daily_due_date = (last_daily_date + timedelta(days=1)) if last_daily_date else (patient_created_date or today)
+            if today >= daily_due_date:
+                candidates.append((
+                    daily_due_date,
+                    type_priority["daily"],
+                    "daily",
+                    "Daily questionnaire available" if last_daily_date else "First daily questionnaire"
+                ))
+
+            # Pick exactly one: earliest due date, then by type priority (so one questionnaire per day, logical order)
+            if candidates:
+                candidates.sort(key=lambda x: (x[0], x[1]))
+                questionnaire_type = candidates[0][2]
+                reason = candidates[0][3]
+            else:
+                # Fallback: nothing due (should not happen for daily) — offer daily
+                questionnaire_type = "daily"
+                reason = "Daily questionnaire available"
             
             # Check if today's questionnaire is already filled
             is_today_filled = False

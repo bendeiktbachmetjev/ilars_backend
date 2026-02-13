@@ -42,7 +42,7 @@ def init_database() -> bool:
         # Optimized connection args for reliability
         connect_args = {
             "server_settings": {
-                "application_name": "lars_backend",
+                "application_name": "ilars_backend",
                 "tcp_keepalives_idle": "600",
                 "tcp_keepalives_interval": "30",
                 "tcp_keepalives_count": "3",
