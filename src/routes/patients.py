@@ -79,7 +79,7 @@ async def get_patients(
                         p.status,
                         p.status_reason,
                         d.doctor_code,
-                        hc.code as hospital_code,
+                        h.code as hospital_code,
                         d.first_name,
                         d.last_name,
                         (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
@@ -91,7 +91,7 @@ async def get_patients(
                         (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
                     FROM patients p
                     LEFT JOIN doctors d ON p.doctor_id = d.id
-                    LEFT JOIN hospital_codes hc ON p.hospital_id = hc.hospital_id AND hc.is_active = true
+                    LEFT JOIN hospitals h ON p.hospital_id = h.id
                     WHERE 
                         (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid))
                         {status_filter}
@@ -351,10 +351,9 @@ async def create_patient(claims: dict = Depends(get_current_user)):
             doctor_result = await execute_with_retry(
                 session,
                 text("""
-                    SELECT d.id, d.hospital_id, d.doctor_code, hc.code as hospital_code
+                    SELECT d.id, d.hospital_id, d.doctor_code, h.code as hospital_code
                     FROM doctors d
                     LEFT JOIN hospitals h ON d.hospital_id = h.id
-                    LEFT JOIN hospital_codes hc ON h.id = hc.hospital_id AND hc.is_active = true
                     WHERE d.firebase_uid = :uid
                     LIMIT 1
                 """).bindparams(uid=uid)

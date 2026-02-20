@@ -202,14 +202,13 @@ async def create_or_update_doctor_profile(
             # Hospital can only be assigned through code - no manual selection allowed
             hospital_id_final = None
             if body.hospital_code:
-                # Resolve hospital_id from hospital_code (check active codes only)
+                # Resolve hospital_id from hospital_code directly from hospitals table
                 hospital_result = await execute_with_retry(
                     session,
                     text("""
-                        SELECT h.id 
-                        FROM hospitals h
-                        INNER JOIN hospital_codes hc ON h.id = hc.hospital_id
-                        WHERE hc.code = :code AND hc.is_active = true
+                        SELECT id 
+                        FROM hospitals
+                        WHERE code = :code AND code IS NOT NULL
                     """).bindparams(code=body.hospital_code.upper())
                 )
                 if hospital_result:
@@ -217,9 +216,9 @@ async def create_or_update_doctor_profile(
                     if hospital_row:
                         hospital_id_final = str(hospital_row[0])
                     else:
-                        raise HTTPException(status_code=404, detail="Hospital code not found or inactive")
+                        raise HTTPException(status_code=404, detail="Hospital code not found")
                 else:
-                    raise HTTPException(status_code=404, detail="Hospital code not found or inactive")
+                    raise HTTPException(status_code=404, detail="Hospital code not found")
             elif doctor_exists:
                 # If updating existing doctor without hospital_code, keep existing hospital_id
                 hospital_id_final = str(existing[3]) if existing[3] else None
