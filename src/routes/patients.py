@@ -303,6 +303,25 @@ async def get_patient_detail(
                         "impact_score": float(row[22]) if row[22] else 0,
                     })
             
+            # Get daily step counts (last 90 days)
+            steps_res = await execute_with_retry(
+                session,
+                text("""
+                    SELECT step_date, step_count
+                    FROM daily_steps
+                    WHERE patient_id = :pid
+                        AND step_date >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY step_date ASC
+                """).bindparams(pid=patient_id)
+            )
+            steps_data = []
+            if steps_res:
+                for row in steps_res.fetchall():
+                    steps_data.append({
+                        "date": row[0].isoformat() if row[0] else None,
+                        "steps": row[1] or 0,
+                    })
+
             return {
                 "status": "ok",
                 "patient_code": patient_code,
@@ -312,6 +331,7 @@ async def get_patient_detail(
                 "lars_scores": lars_data,
                 "eq5d5l_scores": eq5d5l_data,
                 "daily_entries": daily_data,
+                "daily_steps": steps_data,
             }
     except HTTPException:
         raise

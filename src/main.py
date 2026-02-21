@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
 from src.database.connection import init_database, is_initialized
-from src.routes import health, patients, weekly, daily, monthly, eq5d5l, questionnaire, hospitals, doctors
+from src.routes import health, patients, weekly, daily, monthly, eq5d5l, questionnaire, hospitals, doctors, steps
 
 
 # Create FastAPI app
@@ -38,4 +38,5 @@ app.include_router(eq5d5l.router, tags=["EQ-5D-5L"])
 app.include_router(questionnaire.router, tags=["Questionnaire"])
 app.include_router(hospitals.router, tags=["Hospitals"])
 app.include_router(doctors.router, tags=["Doctors"])
+app.include_router(steps.router, tags=["Steps"])
 
