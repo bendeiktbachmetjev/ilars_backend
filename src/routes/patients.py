@@ -303,9 +303,7 @@ async def get_patient_detail(
                         "impact_score": float(row[22]) if row[22] else 0,
                     })
             
-            # Get daily step counts from JSONB (last 90 days)
-            from datetime import date, timedelta
-            cutoff = (date.today() - timedelta(days=90)).isoformat()
+            # Get all daily step counts from JSONB (starts from first recorded day)
             steps_res = await execute_with_retry(
                 session,
                 text("SELECT steps FROM patient_steps WHERE patient_id = :pid").bindparams(pid=patient_id)
@@ -316,8 +314,7 @@ async def get_patient_detail(
                 if row and row[0]:
                     raw = row[0] if isinstance(row[0], dict) else {}
                     for d, count in sorted(raw.items()):
-                        if d >= cutoff:
-                            steps_data.append({"date": d, "steps": count or 0})
+                        steps_data.append({"date": d, "steps": count or 0})
 
             return {
                 "status": "ok",
