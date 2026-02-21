@@ -6,6 +6,7 @@ Doctor retrieves steps via getPatientDetail (included in patients.py response).
 
 Storage: one row per patient per day in daily_steps table.
 """
+from datetime import date, timedelta
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List
@@ -70,12 +71,10 @@ async def get_steps_sync_info(
             created_at = row[1] if row and row[1] else None
 
             if last_step_date:
-                from datetime import timedelta
                 start_date = last_step_date + timedelta(days=1)
             elif created_at:
                 start_date = created_at
             else:
-                from datetime import date, timedelta
                 start_date = date.today() - timedelta(days=30)
 
             return {
@@ -137,7 +136,7 @@ async def send_steps(
                             DO UPDATE SET step_count = EXCLUDED.step_count
                         """).bindparams(
                             bindparam('pid', value=patient_id, type_=UUID),
-                            bindparam('step_date', value=entry.step_date, type_=Date),
+                            bindparam('step_date', value=date.fromisoformat(entry.step_date), type_=Date),
                             bindparam('step_count', value=entry.step_count, type_=Integer),
                         ),
                     )
