@@ -24,7 +24,6 @@ router = APIRouter()
 class StepEntry(BaseModel):
     step_date: str
     step_count: int
-    source: Optional[str] = "unknown"
 
 
 class StepsPayload(BaseModel):
@@ -132,16 +131,14 @@ async def send_steps(
                     await execute_with_retry(
                         session,
                         text("""
-                            INSERT INTO daily_steps (patient_id, step_date, step_count, source)
-                            VALUES (:pid, :step_date, :step_count, :source)
+                            INSERT INTO daily_steps (patient_id, step_date, step_count)
+                            VALUES (:pid, :step_date, :step_count)
                             ON CONFLICT (patient_id, step_date)
-                            DO UPDATE SET step_count = EXCLUDED.step_count,
-                                          source = EXCLUDED.source
+                            DO UPDATE SET step_count = EXCLUDED.step_count
                         """).bindparams(
                             bindparam('pid', value=patient_id, type_=UUID),
                             step_date=entry.step_date,
                             step_count=entry.step_count,
-                            source=entry.source or "unknown",
                         ),
                     )
                     saved += 1
