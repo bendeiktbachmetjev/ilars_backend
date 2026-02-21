@@ -2,7 +2,7 @@
 Patient service - business logic for patient operations
 """
 from typing import Optional, List, Dict, Any
-from sqlalchemy import text
+from sqlalchemy import text, bindparam, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.queries import execute_with_retry
@@ -30,23 +30,21 @@ class PatientService:
         Returns:
             Patient ID (UUID as string)
         """
-        # If patient exists, update doctor_id and hospital_id if provided
-        # If patient doesn't exist, create with doctor_id and hospital_id
         result = await execute_with_retry(
             session,
             text("""
                 INSERT INTO patients (patient_code, doctor_id, hospital_id)
                 VALUES (:code, 
-                        CASE WHEN :doctor_id IS NOT NULL AND :doctor_id != '' THEN CAST(:doctor_id AS uuid) ELSE NULL END,
-                        CASE WHEN :hospital_id IS NOT NULL AND :hospital_id != '' THEN CAST(:hospital_id AS uuid) ELSE NULL END)
+                        CASE WHEN :doctor_id != '' THEN CAST(:doctor_id AS uuid) ELSE NULL END,
+                        CASE WHEN :hospital_id != '' THEN CAST(:hospital_id AS uuid) ELSE NULL END)
                 ON CONFLICT (patient_code) DO UPDATE SET
                     doctor_id = COALESCE(EXCLUDED.doctor_id, patients.doctor_id),
                     hospital_id = COALESCE(EXCLUDED.hospital_id, patients.hospital_id)
                 RETURNING id
             """).bindparams(
-                code=patient_code,
-                doctor_id=doctor_id or None,
-                hospital_id=hospital_id or None
+                bindparam('code', value=patient_code),
+                bindparam('doctor_id', value=doctor_id or '', type_=String),
+                bindparam('hospital_id', value=hospital_id or '', type_=String),
             )
         )
         
