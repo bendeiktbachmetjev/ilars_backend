@@ -1,7 +1,6 @@
 """
 Doctor profile endpoints - requires Firebase ID token
 """
-from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Header, Depends
@@ -21,7 +20,6 @@ class DoctorProfileUpdate(BaseModel):
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
     hospital_code: Optional[str] = None  # Required - only way to assign hospital
-    date_of_birth: Optional[str] = None  # YYYY-MM-DD
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
@@ -67,7 +65,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                 session,
                 text("""
                     SELECT d.id, d.firebase_uid, d.email, d.first_name, d.last_name,
-                           d.hospital_id, d.date_of_birth, d.created_at, d.updated_at,
+                           d.hospital_id, d.created_at, d.updated_at,
                            d.doctor_code,
                            h.name as hospital_name
                     FROM doctors d
@@ -99,7 +97,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                         INSERT INTO doctors (firebase_uid, email, doctor_code)
                         VALUES (:uid, :email, :dcode)
                         RETURNING id, firebase_uid, email, first_name, last_name,
-                                  hospital_id, date_of_birth, created_at, updated_at, doctor_code
+                                  hospital_id, created_at, updated_at, doctor_code
                     """).bindparams(
                         uid=uid,
                         email=email,
@@ -113,7 +111,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                     session,
                     text("""
                         SELECT d.id, d.firebase_uid, d.email, d.first_name, d.last_name,
-                               d.hospital_id, d.date_of_birth, d.created_at, d.updated_at,
+                               d.hospital_id, d.created_at, d.updated_at,
                                d.doctor_code,
                                h.name as hospital_name
                         FROM doctors d
@@ -126,9 +124,8 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                     return {"status": "ok", "profile": None, "needs_profile": True}
 
             hospital_id = str(row[5]) if row[5] else None
-            dob = row[6].isoformat() if row[6] else None
-            doctor_code = row[9] if len(row) > 9 and row[9] else None
-            hospital_name = row[10] if len(row) > 10 and row[10] else None
+            doctor_code = row[8] if len(row) > 8 and row[8] else None
+            hospital_name = row[9] if len(row) > 9 and row[9] else None
             
             # Profile is complete only if hospital_id exists (doctor_code is auto-generated)
             needs_profile = not hospital_id
@@ -144,9 +141,8 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                     "hospital_id": hospital_id,
                     "hospital_name": hospital_name,
                     "doctor_code": doctor_code,
-                    "date_of_birth": dob,
-                    "created_at": row[7].isoformat() if row[7] else None,
-                    "updated_at": row[8].isoformat() if row[8] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                    "updated_at": row[7].isoformat() if row[7] else None,
                 },
                 "needs_profile": needs_profile,
             }
@@ -178,13 +174,6 @@ async def create_or_update_doctor_profile(
     session_maker = get_session()
     if not session_maker:
         raise HTTPException(status_code=503, detail="Database not configured")
-
-    dob = None
-    if body.date_of_birth:
-        try:
-            dob = date.fromisoformat(body.date_of_birth)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date_of_birth format (use YYYY-MM-DD)")
 
     try:
         async with session_maker() as session:
@@ -253,7 +242,6 @@ async def create_or_update_doctor_profile(
                                 THEN CAST(:hospital_id AS uuid) 
                                 ELSE hospital_id 
                             END,
-                            date_of_birth = COALESCE(:date_of_birth, date_of_birth),
                             doctor_code = COALESCE(:doctor_code, doctor_code),
                             updated_at = now()
                         WHERE firebase_uid = :uid
@@ -262,7 +250,6 @@ async def create_or_update_doctor_profile(
                         first_name=body.first_name or None,
                         last_name=body.last_name or None,
                         hospital_id=hospital_id_final or None,
-                        date_of_birth=dob,
                         doctor_code=doctor_code,
                         uid=uid,
                     )
@@ -283,21 +270,20 @@ async def create_or_update_doctor_profile(
                 await execute_with_retry(
                     session,
                     text("""
-                        INSERT INTO doctors (firebase_uid, email, first_name, last_name, hospital_id, date_of_birth, doctor_code)
+                        INSERT INTO doctors (firebase_uid, email, first_name, last_name, hospital_id, doctor_code)
                         VALUES (:uid, :email, :first_name, :last_name,
                                 CASE 
                                     WHEN :hospital_id IS NOT NULL AND :hospital_id != '' 
                                     THEN CAST(:hospital_id AS uuid) 
                                     ELSE NULL 
                                 END,
-                                :date_of_birth, :doctor_code)
+                                :doctor_code)
                     """).bindparams(
                         uid=uid,
                         email=email,
                         first_name=body.first_name or None,
                         last_name=body.last_name or None,
                         hospital_id=hospital_id_final or None,
-                        date_of_birth=dob,
                         doctor_code=doctor_code,
                     )
                 )
