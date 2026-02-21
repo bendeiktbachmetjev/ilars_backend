@@ -11,7 +11,8 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
@@ -76,8 +77,8 @@ async def send_steps(
                         SET steps = patient_steps.steps || :new_steps,
                             updated_at = NOW()
                     """).bindparams(
-                        pid=patient_id,
-                        new_steps=json.dumps(new_steps),
+                        bindparam('pid', value=patient_id, type_=UUID),
+                        bindparam('new_steps', value=json.dumps(new_steps), type_=JSONB),
                     ),
                 )
 
