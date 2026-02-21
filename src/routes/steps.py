@@ -2,7 +2,11 @@
 Daily step count endpoints.
 Patient sends steps via POST /sendSteps (X-Patient-Code header).
 Doctor retrieves steps via getPatientDetail (included in patients.py response).
+
+Storage: one row per patient in patient_steps table,
+steps stored as JSONB {"2025-01-15": 5000, "2025-01-16": 7200, ...}
 """
+import json
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List
@@ -34,8 +38,7 @@ async def send_steps(
 ):
     """
     Save daily step counts for a patient.
-    Accepts a batch of {step_date, step_count, source} entries.
-    Uses upsert — last write wins for the same (patient, date).
+    Merges into the JSONB column: {"YYYY-MM-DD": step_count, ...}
     """
     patient_code = validate_patient_code(x_patient_code)
 
@@ -49,6 +52,10 @@ async def send_steps(
     if not payload.steps:
         return {"status": "ok", "saved": 0}
 
+    new_steps = {}
+    for entry in payload.steps:
+        new_steps[entry.step_date] = entry.step_count
+
     try:
         async with session_maker() as session:
             async with session.begin():
@@ -60,27 +67,21 @@ async def send_steps(
                         status_code=500, detail="Failed to resolve patient"
                     )
 
-                saved = 0
-                for entry in payload.steps:
-                    await execute_with_retry(
-                        session,
-                        text("""
-                            INSERT INTO daily_steps (patient_id, step_date, step_count, source)
-                            VALUES (:pid, :d, :c, :s)
-                            ON CONFLICT (patient_id, step_date) DO UPDATE
-                            SET step_count = EXCLUDED.step_count,
-                                source     = EXCLUDED.source,
-                                updated_at = NOW()
-                        """).bindparams(
-                            pid=patient_id,
-                            d=entry.step_date,
-                            c=entry.step_count,
-                            s=entry.source or "unknown",
-                        ),
-                    )
-                    saved += 1
+                await execute_with_retry(
+                    session,
+                    text("""
+                        INSERT INTO patient_steps (patient_id, steps, updated_at)
+                        VALUES (:pid, :new_steps, NOW())
+                        ON CONFLICT (patient_id) DO UPDATE
+                        SET steps = patient_steps.steps || :new_steps,
+                            updated_at = NOW()
+                    """).bindparams(
+                        pid=patient_id,
+                        new_steps=json.dumps(new_steps),
+                    ),
+                )
 
-                return {"status": "ok", "saved": saved}
+                return {"status": "ok", "saved": len(new_steps)}
     except HTTPException:
         raise
     except Exception as e:

@@ -1,16 +1,14 @@
--- Migration: Add daily_steps table for tracking patient step counts
+-- Migration: Add patient_steps table for tracking daily step counts
 -- Run this in the Supabase SQL Editor
+--
+-- Structure: one row per patient, steps stored as JSONB
+-- Example: {"2025-01-15": 5000, "2025-01-16": 7200, "2025-01-17": 3400}
+--
+-- If you already ran the previous migration (daily_steps), drop it first:
+-- DROP TABLE IF EXISTS daily_steps;
 
-CREATE TABLE IF NOT EXISTS daily_steps (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
-    step_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    step_count INTEGER NOT NULL DEFAULT 0,
-    source VARCHAR(50) DEFAULT 'unknown',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (patient_id, step_date)
+CREATE TABLE IF NOT EXISTS patient_steps (
+    patient_id UUID PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+    steps JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_daily_steps_patient_date
-    ON daily_steps (patient_id, step_date DESC);
