@@ -303,18 +303,23 @@ async def get_patient_detail(
                         "impact_score": float(row[22]) if row[22] else 0,
                     })
             
-            # Get all daily step counts from JSONB (starts from first recorded day)
+            # Get daily step counts (one row per day)
             steps_res = await execute_with_retry(
                 session,
-                text("SELECT steps FROM patient_steps WHERE patient_id = :pid").bindparams(pid=patient_id)
+                text("""
+                    SELECT step_date, step_count
+                    FROM daily_steps
+                    WHERE patient_id = :pid
+                    ORDER BY step_date ASC
+                """).bindparams(pid=patient_id)
             )
             steps_data = []
             if steps_res:
-                row = steps_res.first()
-                if row and row[0]:
-                    raw = row[0] if isinstance(row[0], dict) else {}
-                    for d, count in sorted(raw.items()):
-                        steps_data.append({"date": d, "steps": count or 0})
+                for row in steps_res.fetchall():
+                    steps_data.append({
+                        "date": row[0].isoformat() if row[0] else None,
+                        "steps": row[1] or 0,
+                    })
 
             return {
                 "status": "ok",

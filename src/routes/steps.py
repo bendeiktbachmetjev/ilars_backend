@@ -1,18 +1,17 @@
 """
 Daily step count endpoints.
 Patient sends steps via POST /sendSteps (X-Patient-Code header).
+Patient queries sync start date via GET /getStepsSyncInfo.
 Doctor retrieves steps via getPatientDetail (included in patients.py response).
 
-Storage: one row per patient in patient_steps table,
-steps stored as JSONB {"2025-01-15": 5000, "2025-01-16": 7200, ...}
+Storage: one row per patient per day in daily_steps table.
 """
-import json
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List
 from pydantic import BaseModel
 from sqlalchemy import text, bindparam
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
 
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
@@ -32,6 +31,69 @@ class StepsPayload(BaseModel):
     steps: List[StepEntry]
 
 
+@router.get("/getStepsSyncInfo")
+async def get_steps_sync_info(
+    x_patient_code: Optional[str] = Header(None),
+):
+    """
+    Returns the date from which the client should start syncing steps.
+    - If steps already exist: MAX(step_date) + 1 day
+    - If no steps yet: patient created_at date
+    """
+    patient_code = validate_patient_code(x_patient_code)
+
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    try:
+        async with session_maker() as session:
+            patient_id = await PatientService.get_patient_id(session, patient_code)
+            if not patient_id:
+                raise HTTPException(status_code=404, detail="Patient not found")
+
+            result = await execute_with_retry(
+                session,
+                text("""
+                    SELECT
+                        (SELECT MAX(step_date) FROM daily_steps WHERE patient_id = :pid),
+                        (SELECT created_at::date FROM patients WHERE id = :pid)
+                """).bindparams(
+                    bindparam('pid', value=patient_id, type_=UUID),
+                ),
+            )
+
+            row = result.first() if result else None
+            last_step_date = row[0] if row and row[0] else None
+            created_at = row[1] if row and row[1] else None
+
+            if last_step_date:
+                from datetime import timedelta
+                start_date = last_step_date + timedelta(days=1)
+            elif created_at:
+                start_date = created_at
+            else:
+                from datetime import date, timedelta
+                start_date = date.today() - timedelta(days=30)
+
+            return {
+                "status": "ok",
+                "start_date": start_date.isoformat(),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(e)},
+        )
+
+
 @router.post("/sendSteps")
 async def send_steps(
     payload: StepsPayload,
@@ -39,7 +101,8 @@ async def send_steps(
 ):
     """
     Save daily step counts for a patient.
-    Merges into the JSONB column: {"YYYY-MM-DD": step_count, ...}
+    Each entry becomes a separate row in daily_steps.
+    ON CONFLICT updates the step_count for that day.
     """
     patient_code = validate_patient_code(x_patient_code)
 
@@ -53,10 +116,6 @@ async def send_steps(
     if not payload.steps:
         return {"status": "ok", "saved": 0}
 
-    new_steps = {}
-    for entry in payload.steps:
-        new_steps[entry.step_date] = entry.step_count
-
     try:
         async with session_maker() as session:
             async with session.begin():
@@ -68,21 +127,26 @@ async def send_steps(
                         status_code=500, detail="Failed to resolve patient"
                     )
 
-                await execute_with_retry(
-                    session,
-                    text("""
-                        INSERT INTO patient_steps (patient_id, steps, updated_at)
-                        VALUES (:pid, :new_steps, NOW())
-                        ON CONFLICT (patient_id) DO UPDATE
-                        SET steps = patient_steps.steps || :new_steps,
-                            updated_at = NOW()
-                    """).bindparams(
-                        bindparam('pid', value=patient_id, type_=UUID),
-                        bindparam('new_steps', value=json.dumps(new_steps), type_=JSONB),
-                    ),
-                )
+                saved = 0
+                for entry in payload.steps:
+                    await execute_with_retry(
+                        session,
+                        text("""
+                            INSERT INTO daily_steps (patient_id, step_date, step_count, source)
+                            VALUES (:pid, :step_date, :step_count, :source)
+                            ON CONFLICT (patient_id, step_date)
+                            DO UPDATE SET step_count = EXCLUDED.step_count,
+                                          source = EXCLUDED.source
+                        """).bindparams(
+                            bindparam('pid', value=patient_id, type_=UUID),
+                            step_date=entry.step_date,
+                            step_count=entry.step_count,
+                            source=entry.source or "unknown",
+                        ),
+                    )
+                    saved += 1
 
-                return {"status": "ok", "saved": len(new_steps)}
+                return {"status": "ok", "saved": saved}
     except HTTPException:
         raise
     except Exception as e:
