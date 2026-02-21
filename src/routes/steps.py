@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List
 from pydantic import BaseModel
-from sqlalchemy import text, bindparam
+from sqlalchemy import text, bindparam, Date, Integer
 from sqlalchemy.dialects.postgresql import UUID
 
 from src.database.connection import get_session, is_initialized
@@ -137,8 +137,8 @@ async def send_steps(
                             DO UPDATE SET step_count = EXCLUDED.step_count
                         """).bindparams(
                             bindparam('pid', value=patient_id, type_=UUID),
-                            step_date=entry.step_date,
-                            step_count=entry.step_count,
+                            bindparam('step_date', value=entry.step_date, type_=Date),
+                            bindparam('step_count', value=entry.step_count, type_=Integer),
                         ),
                     )
                     saved += 1
