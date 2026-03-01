@@ -51,6 +51,67 @@ async def validate_patient_code_endpoint(x_patient_code: str = Header(None, desc
             content={"status": "error", "detail": "Internal server error"}
         )
 
+class PatientProfileUpdate(BaseModel):
+    email: str | None = None
+    agreed_to_terms: bool
+    agreed_to_promos: bool
+
+@router.post("/updatePatientProfile")
+async def update_patient_profile(
+    payload: PatientProfileUpdate,
+    x_patient_code: str = Header(..., description="Patient Code")
+):
+    """
+    Update patient profile with email and consent flags.
+    Used by frontend on initial login.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        valid_code = validate_patient_code(x_patient_code)
+    except HTTPException:
+        return JSONResponse(status_code=400, content={"status": "error", "detail": "Invalid patient code format"})
+        
+    try:
+        async with session_maker() as session:
+            # 1. Verify patient exists
+            patient_id = await PatientService.get_patient_id(session, valid_code)
+            if not patient_id:
+                return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
+            
+            # 2. Update optional profile fields
+            await execute_with_retry(
+                session,
+                text("""
+                    UPDATE patients 
+                    SET email = :email, 
+                        agreed_to_terms = :terms, 
+                        agreed_to_promos = :promos
+                    WHERE id = :pid
+                """).bindparams(
+                    email=payload.email,
+                    terms=payload.agreed_to_terms,
+                    promos=payload.agreed_to_promos,
+                    pid=patient_id
+                )
+            )
+            await session.commit()
+            
+            return {"status": "ok"}
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"Error in updatePatientProfile: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": "Internal server error"}
+        )
 
 @router.get("/getPatients")
 async def get_patients(
