@@ -64,7 +64,7 @@ async def get_patients(
             if status == "active":
                 status_filter = "AND p.status = 'active'"
             elif status == "inactive":
-                status_filter = "AND p.status = 'inactive'"
+                status_filter = "AND p.status IN ('inactive', 'dead')"
 
             # Get patients from the same hospital with doctor and hospital codes + doctor name
             # Sort: first patients of current doctor, then other patients from same hospital
