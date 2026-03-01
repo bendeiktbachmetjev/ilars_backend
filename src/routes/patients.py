@@ -498,7 +498,7 @@ async def update_patient_status(
 
             patient_res = await execute_with_retry(
                 session,
-                text("SELECT id, hospital_id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+                text("SELECT id, hospital_id, status FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
             )
             if patient_res is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
@@ -507,9 +507,26 @@ async def update_patient_status(
             if not patient_row:
                 raise HTTPException(status_code=404, detail="Patient not found")
 
+            patient_id = patient_row[0]
             patient_hospital_id = str(patient_row[1]) if patient_row[1] else None
+            patient_status = patient_row[2] if len(patient_row) > 2 else "active"
+
             if patient_hospital_id != hospital_id:
                 raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
+
+            if patient_status != body.status:
+                await execute_with_retry(
+                    session,
+                    text("""
+                        INSERT INTO patient_status_history (patient_id, previous_status, new_status, reason)
+                        VALUES (:patient_id, :prev_status, :new_status, :reason)
+                    """).bindparams(
+                        patient_id=patient_id,
+                        prev_status=patient_status,
+                        new_status=body.status,
+                        reason=body.status_reason or None
+                    )
+                )
 
             await execute_with_retry(
                 session,
@@ -538,6 +555,99 @@ async def update_patient_status(
         error_msg = str(e)
         error_type = type(e).__name__
         print(f"Error in updatePatientStatus: {error_type}: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": error_msg, "error_type": error_type}
+        )
+
+
+@router.get("/getPatientStatusHistory")
+async def get_patient_status_history(
+    patient_code: str = Query(..., description="Patient code"),
+    claims: dict = Depends(get_current_user)
+):
+    """
+    Get history of patient status changes.
+    Only doctor from same hospital can view.
+    """
+    patient_code = validate_patient_code(patient_code)
+
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    uid = claims.get("uid") or claims.get("sub", "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    try:
+        async with session_maker() as session:
+            doctor_result = await execute_with_retry(
+                session,
+                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+            )
+            if doctor_result is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+
+            doctor_row = doctor_result.first()
+            if not doctor_row or not doctor_row[0]:
+                raise HTTPException(status_code=403, detail="Doctor has no hospital assigned")
+
+            hospital_id = str(doctor_row[0])
+
+            patient_res = await execute_with_retry(
+                session,
+                text("SELECT id, hospital_id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+            )
+            if patient_res is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+
+            patient_row = patient_res.first()
+            if not patient_row:
+                raise HTTPException(status_code=404, detail="Patient not found")
+
+            patient_id = patient_row[0]
+            patient_hospital_id = str(patient_row[1]) if patient_row[1] else None
+
+            if patient_hospital_id != hospital_id:
+                raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
+
+            history_res = await execute_with_retry(
+                session,
+                text("""
+                    SELECT previous_status, new_status, reason, changed_at
+                    FROM patient_status_history
+                    WHERE patient_id = :patient_id
+                    ORDER BY changed_at DESC
+                """).bindparams(patient_id=patient_id)
+            )
+            
+            history_data = []
+            if history_res:
+                for row in history_res.fetchall():
+                    history_data.append({
+                        "previous_status": row[0],
+                        "new_status": row[1],
+                        "reason": row[2],
+                        "changed_at": row[3].isoformat() if row[3] else None
+                    })
+
+            return {
+                "status": "ok",
+                "patient_code": patient_code,
+                "history": history_data
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = type(e).__name__
+        print(f"Error in getPatientStatusHistory: {error_type}: {error_msg}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,

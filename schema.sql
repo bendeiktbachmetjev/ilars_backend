@@ -10,6 +10,16 @@ CREATE TABLE patients (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Таблица истории статусов пациентов
+CREATE TABLE patient_status_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+  previous_status TEXT,
+  new_status TEXT NOT NULL,
+  reason TEXT,
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Weekly (LARS) опросник - все поля уже отдельные
 CREATE TABLE weekly_entries (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -110,6 +120,7 @@ CREATE TABLE eq5d5l_entries (
 
 -- Индексы
 CREATE INDEX idx_patients_code ON patients (patient_code);
+CREATE INDEX idx_patient_status_history_pid ON patient_status_history (patient_id, changed_at DESC);
 CREATE INDEX idx_weekly_patient_date ON weekly_entries (patient_id, entry_date DESC);
 CREATE INDEX idx_daily_patient_date ON daily_entries (patient_id, entry_date DESC);
 CREATE INDEX idx_monthly_patient_date ON monthly_entries (patient_id, entry_date DESC);
