@@ -453,7 +453,7 @@ async def create_patient(claims: dict = Depends(get_current_user)):
 
 class UpdatePatientStatusBody(BaseModel):
     patient_code: str
-    status: str  # 'active' | 'inactive'
+    status: str  # 'active' | 'inactive' | 'dead'
     status_reason: str | None = None
 
 
@@ -467,8 +467,8 @@ async def update_patient_status(
     Only doctor from same hospital can update.
     """
     patient_code = validate_patient_code(body.patient_code)
-    if body.status not in ("active", "inactive"):
-        raise HTTPException(status_code=400, detail="status must be 'active' or 'inactive'")
+    if body.status not in ("active", "inactive", "dead"):
+        raise HTTPException(status_code=400, detail="status must be 'active', 'inactive', or 'dead'")
 
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
