@@ -92,7 +92,7 @@ async def update_patient_profile(
                     SET email = :email, 
                         agreed_to_terms = :terms, 
                         agreed_to_promos = :promos
-                    WHERE id = :pid
+                    WHERE id = CAST(:pid AS UUID)
                 """).bindparams(
                     email=payload.email,
                     terms=payload.agreed_to_terms,
