@@ -13,6 +13,44 @@ from src.routes.doctors import get_current_user
 
 router = APIRouter()
 
+from fastapi import Header
+from src.services.patient_service import PatientService
+
+@router.get("/validatePatientCode")
+async def validate_patient_code_endpoint(x_patient_code: str = Header(None, description="Patient Code")):
+    """
+    Validate if a patient code exists in the database.
+    Used by frontend to check code validity before login/saving.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        valid_code = validate_patient_code(x_patient_code)
+    except HTTPException:
+        return JSONResponse(status_code=200, content={"status": "error", "detail": "Invalid patient code"})
+        
+    try:
+        async with session_maker() as session:
+            patient_id = await PatientService.get_patient_id(session, valid_code)
+            if not patient_id:
+                return JSONResponse(status_code=200, content={"status": "error", "detail": "Invalid patient code"})
+            
+            return {"status": "ok", "valid": True}
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"Error in validatePatientCode: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": "Internal server error"}
+        )
+
 
 @router.get("/getPatients")
 async def get_patients(
