@@ -619,7 +619,7 @@ async def get_patient_status_history(
             history_res = await execute_with_retry(
                 session,
                 text("""
-                    SELECT previous_status, new_status, reason, changed_at
+                    SELECT id, previous_status, new_status, reason, changed_at
                     FROM patient_status_history
                     WHERE patient_id = :patient_id
                     ORDER BY changed_at DESC
@@ -630,10 +630,11 @@ async def get_patient_status_history(
             if history_res:
                 for row in history_res.fetchall():
                     history_data.append({
-                        "previous_status": row[0],
-                        "new_status": row[1],
-                        "reason": row[2],
-                        "changed_at": row[3].isoformat() if row[3] else None
+                        "id": str(row[0]),
+                        "previous_status": row[1],
+                        "new_status": row[2],
+                        "reason": row[3],
+                        "changed_at": row[4].isoformat() if row[4] else None
                     })
 
             return {
@@ -648,6 +649,127 @@ async def get_patient_status_history(
         error_msg = str(e)
         error_type = type(e).__name__
         print(f"Error in getPatientStatusHistory: {error_type}: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": error_msg, "error_type": error_type}
+        )
+
+
+class DeletePatientStatusChangeBody(BaseModel):
+    history_id: str
+
+
+@router.post("/deletePatientStatusChange")
+async def delete_patient_status_change(
+    body: DeletePatientStatusChangeBody = Body(...),
+    claims: dict = Depends(get_current_user)
+):
+    """
+    Delete a specific patient status change history record.
+    If it was the most recent change, the patient's status will revert to the previous_status of that record.
+    Only doctor from same hospital can update.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    uid = claims.get("uid") or claims.get("sub", "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    try:
+        async with session_maker() as session:
+            doctor_result = await execute_with_retry(
+                session,
+                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+            )
+            if doctor_result is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+
+            doctor_row = doctor_result.first()
+            if not doctor_row or not doctor_row[0]:
+                raise HTTPException(status_code=403, detail="Doctor has no hospital assigned")
+
+            hospital_id = str(doctor_row[0])
+
+            # Find the history record and verify hospital ownership
+            history_res = await execute_with_retry(
+                session,
+                text("""
+                    SELECT h.id, h.patient_id, h.previous_status, h.changed_at, p.hospital_id, p.patient_code 
+                    FROM patient_status_history h
+                    JOIN patients p ON h.patient_id = p.id
+                    WHERE h.id = CAST(:history_id AS uuid)
+                """).bindparams(history_id=body.history_id)
+            )
+            if history_res is None:
+                raise HTTPException(status_code=503, detail="Database unavailable")
+
+            history_row = history_res.first()
+            if not history_row:
+                raise HTTPException(status_code=404, detail="Status change history not found")
+
+            hist_id, patient_id, previous_status, changed_at, patient_hospital_id, patient_code = history_row
+
+            if str(patient_hospital_id) != hospital_id:
+                raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
+
+            # Check if this is the most recent status change
+            latest_res = await execute_with_retry(
+                session,
+                text("""
+                    SELECT id FROM patient_status_history
+                    WHERE patient_id = :patient_id
+                    ORDER BY changed_at DESC
+                    LIMIT 1
+                """).bindparams(patient_id=patient_id)
+            )
+            
+            latest_row = latest_res.first() if latest_res else None
+            is_latest = latest_row is not None and str(latest_row[0]) == str(hist_id)
+
+            # Revert the patient status if it's the latest
+            if is_latest:
+                await execute_with_retry(
+                    session,
+                    text("""
+                        UPDATE patients
+                        SET status = :previous_status
+                        WHERE id = :patient_id
+                    """).bindparams(
+                        previous_status=previous_status,
+                        patient_id=patient_id
+                    )
+                )
+
+            # Delete the history record
+            await execute_with_retry(
+                session,
+                text("""
+                    DELETE FROM patient_status_history
+                    WHERE id = CAST(:history_id AS uuid)
+                """).bindparams(history_id=body.history_id)
+            )
+            
+            await session.commit()
+
+            return {
+                "status": "ok",
+                "message": "Status change deleted",
+                "patient_code": patient_code,
+                "reverted_to": previous_status if is_latest else None
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = type(e).__name__
+        print(f"Error in deletePatientStatusChange: {error_type}: {error_msg}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
