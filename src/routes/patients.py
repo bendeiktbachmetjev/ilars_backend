@@ -131,7 +131,7 @@ async def unsubscribe_patient(x_patient_code: str = Header(..., description="Pat
             
             await execute_with_retry(
                 session,
-                text("UPDATE patients SET agreed_to_promos = false WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
+                text("UPDATE patients SET agreed_to_promos = false, email = NULL WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
             )
             await session.commit()
             
@@ -139,6 +139,54 @@ async def unsubscribe_patient(x_patient_code: str = Header(..., description="Pat
     except Exception as e:
         import traceback
         print(f"Error in unsubscribePatient: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": "Internal server error"}
+        )
+
+class PatientSubscribe(BaseModel):
+    email: str
+
+@router.post("/subscribePatient")
+async def subscribe_patient(
+    payload: PatientSubscribe,
+    x_patient_code: str = Header(..., description="Patient Code")
+):
+    """
+    Subscribe to promotional emails and optional provide a new email.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        valid_code = validate_patient_code(x_patient_code)
+    except HTTPException:
+        return JSONResponse(status_code=400, content={"status": "error", "detail": "Invalid patient code format"})
+        
+    try:
+        async with session_maker() as session:
+            patient_id = await PatientService.get_patient_id(session, valid_code)
+            if not patient_id:
+                return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
+            
+            await execute_with_retry(
+                session,
+                text("UPDATE patients SET agreed_to_promos = true, email = :email WHERE id = CAST(:pid AS UUID)").bindparams(
+                    email=payload.email,
+                    pid=patient_id
+                )
+            )
+            await session.commit()
+            
+            return {"status": "ok"}
+    except Exception as e:
+        import traceback
+        print(f"Error in subscribePatient: {str(e)}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
