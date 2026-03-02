@@ -144,6 +144,12 @@ async def unsubscribe_patient(x_patient_code: str = Header(..., description="Pat
             status_code=500,
             content={"status": "error", "detail": "Internal server error"}
         )
+
+@router.post("/updatePatientProfile")
+async def update_patient_profile(
+    payload: PatientProfileUpdate,
+    x_patient_code: str = Header(..., description="Patient Code")
+):
     """
     Update patient profile with email and consent flags.
     Used by frontend on initial login.
