@@ -56,11 +56,94 @@ class PatientProfileUpdate(BaseModel):
     agreed_to_terms: bool
     agreed_to_promos: bool
 
-@router.post("/updatePatientProfile")
-async def update_patient_profile(
-    payload: PatientProfileUpdate,
-    x_patient_code: str = Header(..., description="Patient Code")
-):
+@router.get("/getPatientProfile")
+async def get_patient_profile(x_patient_code: str = Header(..., description="Patient Code")):
+    """
+    Get patient profile data including email and consents.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        valid_code = validate_patient_code(x_patient_code)
+    except HTTPException:
+        return JSONResponse(status_code=400, content={"status": "error", "detail": "Invalid patient code format"})
+        
+    try:
+        async with session_maker() as session:
+            # 1. Verify patient exists and get ID
+            patient_id = await PatientService.get_patient_id(session, valid_code)
+            if not patient_id:
+                return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
+                
+            # 2. Get profile tracking row
+            result = await execute_with_retry(
+                session,
+                text("SELECT email, agreed_to_terms, agreed_to_promos FROM patients WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
+            )
+            
+            row = result.first()
+            if not row:
+                return JSONResponse(status_code=404, content={"status": "error", "detail": "Profile not found"})
+                
+            return {
+                "status": "ok",
+                "email": row[0],
+                "agreed_to_terms": row[1] if row[1] is not None else False,
+                "agreed_to_promos": row[2] if row[2] is not None else False
+            }
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"Error in getPatientProfile: {error_msg}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": "Internal server error"}
+        )
+
+@router.post("/unsubscribePatient")
+async def unsubscribe_patient(x_patient_code: str = Header(..., description="Patient Code")):
+    """
+    Withdraw consent for promotional emails.
+    """
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        valid_code = validate_patient_code(x_patient_code)
+    except HTTPException:
+        return JSONResponse(status_code=400, content={"status": "error", "detail": "Invalid patient code format"})
+        
+    try:
+        async with session_maker() as session:
+            patient_id = await PatientService.get_patient_id(session, valid_code)
+            if not patient_id:
+                return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
+            
+            await execute_with_retry(
+                session,
+                text("UPDATE patients SET agreed_to_promos = false WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
+            )
+            await session.commit()
+            
+            return {"status": "ok"}
+    except Exception as e:
+        import traceback
+        print(f"Error in unsubscribePatient: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": "Internal server error"}
+        )
     """
     Update patient profile with email and consent flags.
     Used by frontend on initial login.
