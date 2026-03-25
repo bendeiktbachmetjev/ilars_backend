@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
-from src.utils.validators import validate_patient_code
+from src.utils.validators import validate_patient_code, validate_period
 from src.services.patient_service import PatientService
 
 router = APIRouter()
@@ -143,6 +143,74 @@ async def send_steps(
                     saved += 1
 
                 return {"status": "ok", "saved": saved}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(e)},
+        )
+
+
+@router.get("/getStepsChartData")
+async def get_steps_chart_data(
+    period: str,
+    x_patient_code: Optional[str] = Header(None),
+):
+    """
+    Get historical steps data for charts based on period.
+    weekly: last 35 days (5 weeks)
+    monthly: last 180 days (6 months)
+    yearly: last 5 years
+    """
+    patient_code = validate_patient_code(x_patient_code)
+    period = validate_period(period)
+
+    if not is_initialized():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    session_maker = get_session()
+    if not session_maker:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    try:
+        async with session_maker() as session:
+            patient_id = await PatientService.get_patient_id(session, patient_code)
+            if not patient_id:
+                return {"status": "ok", "data": []}
+
+            if period == "weekly":
+                interval = "35 days"
+            elif period == "monthly":
+                interval = "6 months"
+            else:
+                interval = "5 years"
+
+            query = text(f"""
+                SELECT step_date, step_count
+                FROM daily_steps
+                WHERE patient_id = :pid
+                AND step_date >= CURRENT_DATE - INTERVAL '{interval}'
+                ORDER BY step_date ASC
+            """)
+
+            result = await execute_with_retry(
+                session,
+                query.bindparams(bindparam('pid', value=patient_id, type_=UUID))
+            )
+
+            data = []
+            if result:
+                for row in result.fetchall():
+                    data.append({
+                        "date": row[0].isoformat() if row[0] else None,
+                        "steps": row[1] or 0
+                    })
+
+            return {"status": "ok", "data": data}
+            
     except HTTPException:
         raise
     except Exception as e:
