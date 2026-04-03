@@ -488,7 +488,8 @@ async def get_patient_detail(
                         "score": row[1]
                     })
             
-            # Get daily entries with food/drink consumption (last 30 days)
+            # Daily questionnaires for doctor charts: use a long window so older data still appears
+            # if the patient has not submitted daily forms recently (30-day-only hid all history).
             daily_res = await execute_with_retry(
                 session,
                 text("""
@@ -502,7 +503,7 @@ async def get_patient_detail(
                         bristol_scale, stool_count, bloating, impact_score
                     FROM daily_entries
                     WHERE patient_id = :pid
-                        AND entry_date >= CURRENT_DATE - INTERVAL '30 days'
+                        AND entry_date >= CURRENT_DATE - INTERVAL '730 days'
                     ORDER BY entry_date ASC
                 """).bindparams(pid=patient_id)
             )
