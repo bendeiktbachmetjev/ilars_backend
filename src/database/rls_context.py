@@ -17,30 +17,42 @@ async def set_db_context(
 ):
     """
     Sets PostgreSQL session variables for Row Level Security (RLS).
-    Using standard SET, but we explicitly reset it to 'none' on exit to prevent connection pooling leaks.
+    Using standard set_config with bind params to be safe and compatible w/ asyncpg.
     """
     try:
-        commands = [f"SET app.current_role = '{role}'"]
-        commands.append(f"SET app.current_user_id = '{user_id or ''}'")
-        commands.append(f"SET app.doctor_id = '{doctor_id or ''}'")
-        commands.append(f"SET app.hospital_id = '{hospital_id or ''}'")
-            
-        sql_command = "; ".join(commands) + ";"
-        await execute_with_retry(session, text(sql_command))
+        await execute_with_retry(
+            session,
+            text("""
+                SELECT 
+                    set_config('app.current_role', :role, false),
+                    set_config('app.current_user_id', :user_id, false),
+                    set_config('app.doctor_id', :doctor_id, false),
+                    set_config('app.hospital_id', :hospital_id, false);
+            """).bindparams(
+                role=role,
+                user_id=user_id or '',
+                doctor_id=doctor_id or '',
+                hospital_id=hospital_id or ''
+            )
+        )
         yield session
     finally:
         # Reset to safe defaults to avoid bleeding across connections
         await execute_with_retry(
             session, 
             text("""
-                SET app.current_role = 'none';
-                SET app.current_user_id = '';
-                SET app.doctor_id = '';
-                SET app.hospital_id = '';
+                SELECT 
+                    set_config('app.current_role', 'none', false),
+                    set_config('app.current_user_id', '', false),
+                    set_config('app.doctor_id', '', false),
+                    set_config('app.hospital_id', '', false);
             """)
         )
 
 # Helper function
 async def apply_system_context(session: AsyncSession):
     """Helper to quickly run queries as system (e.g. auth lookups)"""
-    await execute_with_retry(session, text("SET app.current_role = 'system';"))
+    await execute_with_retry(
+        session, 
+        text("SELECT set_config('app.current_role', 'system', false);")
+    )
