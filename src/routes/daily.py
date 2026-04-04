@@ -11,6 +11,7 @@ from src.models.schemas import DailyPayload
 from src.database.connection import get_session, is_initialized
 from src.utils.validators import validate_patient_code
 from src.services.patient_service import PatientService
+from src.database.rls_context import set_db_context
 
 router = APIRouter()
 
@@ -74,96 +75,97 @@ async def send_daily(payload: DailyPayload, x_patient_code: Optional[str] = Head
                 drink_dairy = drink.get("dairy_drinks", 0)
                 drink_energy = drink.get("energy_drinks", 0)
                 
-                # Save daily entry
-                result = await session.execute(
-                    text("""
-                        INSERT INTO daily_entries (
-                            patient_id, entry_date, bristol_scale,
-                            stool_count, pads_used, urgency, night_stools, leakage,
-                            incomplete_evacuation, bloating, impact_score, activity_interfere,
-                            food_vegetables_all, food_root_vegetables, food_whole_grains,
-                            food_whole_grain_bread, food_nuts_and_seeds, food_legumes,
-                            food_fruits_with_skin, food_berries, food_soft_fruits_no_skin,
-                            food_muesli_and_bran,
-                            drink_water, drink_coffee, drink_tea, drink_alcohol,
-                            drink_carbonated, drink_juices, drink_dairy, drink_energy
-                        ) VALUES (
-                            :patient_id,
-                            COALESCE(CAST(:entry_date AS DATE), CURRENT_DATE),
-                            :bristol_scale,
-                            :stool_count, :pads_used, :urgency, :night_stools, :leakage,
-                            :incomplete_evacuation, :bloating, :impact_score, :activity_interfere,
-                            :food_vegetables_all, :food_root_vegetables, :food_whole_grains,
-                            :food_whole_grain_bread, :food_nuts_and_seeds, :food_legumes,
-                            :food_fruits_with_skin, :food_berries, :food_soft_fruits_no_skin,
-                            :food_muesli_and_bran,
-                            :drink_water, :drink_coffee, :drink_tea, :drink_alcohol,
-                            :drink_carbonated, :drink_juices, :drink_dairy, :drink_energy
+                async with set_db_context(session, role='patient', user_id=patient_id_str):
+                    # Save daily entry
+                    result = await session.execute(
+                        text("""
+                            INSERT INTO daily_entries (
+                                patient_id, entry_date, bristol_scale,
+                                stool_count, pads_used, urgency, night_stools, leakage,
+                                incomplete_evacuation, bloating, impact_score, activity_interfere,
+                                food_vegetables_all, food_root_vegetables, food_whole_grains,
+                                food_whole_grain_bread, food_nuts_and_seeds, food_legumes,
+                                food_fruits_with_skin, food_berries, food_soft_fruits_no_skin,
+                                food_muesli_and_bran,
+                                drink_water, drink_coffee, drink_tea, drink_alcohol,
+                                drink_carbonated, drink_juices, drink_dairy, drink_energy
+                            ) VALUES (
+                                :patient_id,
+                                COALESCE(CAST(:entry_date AS DATE), CURRENT_DATE),
+                                :bristol_scale,
+                                :stool_count, :pads_used, :urgency, :night_stools, :leakage,
+                                :incomplete_evacuation, :bloating, :impact_score, :activity_interfere,
+                                :food_vegetables_all, :food_root_vegetables, :food_whole_grains,
+                                :food_whole_grain_bread, :food_nuts_and_seeds, :food_legumes,
+                                :food_fruits_with_skin, :food_berries, :food_soft_fruits_no_skin,
+                                :food_muesli_and_bran,
+                                :drink_water, :drink_coffee, :drink_tea, :drink_alcohol,
+                                :drink_carbonated, :drink_juices, :drink_dairy, :drink_energy
+                            )
+                            ON CONFLICT (patient_id, entry_date) DO UPDATE SET
+                                bristol_scale = EXCLUDED.bristol_scale,
+                                stool_count = EXCLUDED.stool_count,
+                                pads_used = EXCLUDED.pads_used,
+                                urgency = EXCLUDED.urgency,
+                                night_stools = EXCLUDED.night_stools,
+                                leakage = EXCLUDED.leakage,
+                                incomplete_evacuation = EXCLUDED.incomplete_evacuation,
+                                bloating = EXCLUDED.bloating,
+                                impact_score = EXCLUDED.impact_score,
+                                activity_interfere = EXCLUDED.activity_interfere,
+                                food_vegetables_all = EXCLUDED.food_vegetables_all,
+                                food_root_vegetables = EXCLUDED.food_root_vegetables,
+                                food_whole_grains = EXCLUDED.food_whole_grains,
+                                food_whole_grain_bread = EXCLUDED.food_whole_grain_bread,
+                                food_nuts_and_seeds = EXCLUDED.food_nuts_and_seeds,
+                                food_legumes = EXCLUDED.food_legumes,
+                                food_fruits_with_skin = EXCLUDED.food_fruits_with_skin,
+                                food_berries = EXCLUDED.food_berries,
+                                food_soft_fruits_no_skin = EXCLUDED.food_soft_fruits_no_skin,
+                                food_muesli_and_bran = EXCLUDED.food_muesli_and_bran,
+                                drink_water = EXCLUDED.drink_water,
+                                drink_coffee = EXCLUDED.drink_coffee,
+                                drink_tea = EXCLUDED.drink_tea,
+                                drink_alcohol = EXCLUDED.drink_alcohol,
+                                drink_carbonated = EXCLUDED.drink_carbonated,
+                                drink_juices = EXCLUDED.drink_juices,
+                                drink_dairy = EXCLUDED.drink_dairy,
+                                drink_energy = EXCLUDED.drink_energy
+                            RETURNING id
+                        """).bindparams(
+                            patient_id=patient_id,
+                            entry_date=payload.entry_date,
+                            bristol_scale=payload.bristol_scale,
+                            stool_count=stool_count,
+                            pads_used=pads_used,
+                            urgency=urgency,
+                            night_stools=night_stools,
+                            leakage=leakage,
+                            incomplete_evacuation=incomplete_evacuation,
+                            bloating=bloating,
+                            impact_score=impact_score,
+                            activity_interfere=activity_interfere,
+                            food_vegetables_all=food_vegetables_all,
+                            food_root_vegetables=food_root_vegetables,
+                            food_whole_grains=food_whole_grains,
+                            food_whole_grain_bread=food_whole_grain_bread,
+                            food_nuts_and_seeds=food_nuts_and_seeds,
+                            food_legumes=food_legumes,
+                            food_fruits_with_skin=food_fruits_with_skin,
+                            food_berries=food_berries,
+                            food_soft_fruits_no_skin=food_soft_fruits_no_skin,
+                            food_muesli_and_bran=food_muesli_and_bran,
+                            drink_water=drink_water,
+                            drink_coffee=drink_coffee,
+                            drink_tea=drink_tea,
+                            drink_alcohol=drink_alcohol,
+                            drink_carbonated=drink_carbonated,
+                            drink_juices=drink_juices,
+                            drink_dairy=drink_dairy,
+                            drink_energy=drink_energy,
                         )
-                        ON CONFLICT (patient_id, entry_date) DO UPDATE SET
-                            bristol_scale = EXCLUDED.bristol_scale,
-                            stool_count = EXCLUDED.stool_count,
-                            pads_used = EXCLUDED.pads_used,
-                            urgency = EXCLUDED.urgency,
-                            night_stools = EXCLUDED.night_stools,
-                            leakage = EXCLUDED.leakage,
-                            incomplete_evacuation = EXCLUDED.incomplete_evacuation,
-                            bloating = EXCLUDED.bloating,
-                            impact_score = EXCLUDED.impact_score,
-                            activity_interfere = EXCLUDED.activity_interfere,
-                            food_vegetables_all = EXCLUDED.food_vegetables_all,
-                            food_root_vegetables = EXCLUDED.food_root_vegetables,
-                            food_whole_grains = EXCLUDED.food_whole_grains,
-                            food_whole_grain_bread = EXCLUDED.food_whole_grain_bread,
-                            food_nuts_and_seeds = EXCLUDED.food_nuts_and_seeds,
-                            food_legumes = EXCLUDED.food_legumes,
-                            food_fruits_with_skin = EXCLUDED.food_fruits_with_skin,
-                            food_berries = EXCLUDED.food_berries,
-                            food_soft_fruits_no_skin = EXCLUDED.food_soft_fruits_no_skin,
-                            food_muesli_and_bran = EXCLUDED.food_muesli_and_bran,
-                            drink_water = EXCLUDED.drink_water,
-                            drink_coffee = EXCLUDED.drink_coffee,
-                            drink_tea = EXCLUDED.drink_tea,
-                            drink_alcohol = EXCLUDED.drink_alcohol,
-                            drink_carbonated = EXCLUDED.drink_carbonated,
-                            drink_juices = EXCLUDED.drink_juices,
-                            drink_dairy = EXCLUDED.drink_dairy,
-                            drink_energy = EXCLUDED.drink_energy
-                        RETURNING id
-                    """).bindparams(
-                        patient_id=patient_id,
-                        entry_date=payload.entry_date,
-                        bristol_scale=payload.bristol_scale,
-                        stool_count=stool_count,
-                        pads_used=pads_used,
-                        urgency=urgency,
-                        night_stools=night_stools,
-                        leakage=leakage,
-                        incomplete_evacuation=incomplete_evacuation,
-                        bloating=bloating,
-                        impact_score=impact_score,
-                        activity_interfere=activity_interfere,
-                        food_vegetables_all=food_vegetables_all,
-                        food_root_vegetables=food_root_vegetables,
-                        food_whole_grains=food_whole_grains,
-                        food_whole_grain_bread=food_whole_grain_bread,
-                        food_nuts_and_seeds=food_nuts_and_seeds,
-                        food_legumes=food_legumes,
-                        food_fruits_with_skin=food_fruits_with_skin,
-                        food_berries=food_berries,
-                        food_soft_fruits_no_skin=food_soft_fruits_no_skin,
-                        food_muesli_and_bran=food_muesli_and_bran,
-                        drink_water=drink_water,
-                        drink_coffee=drink_coffee,
-                        drink_tea=drink_tea,
-                        drink_alcohol=drink_alcohol,
-                        drink_carbonated=drink_carbonated,
-                        drink_juices=drink_juices,
-                        drink_dairy=drink_dairy,
-                        drink_energy=drink_energy,
                     )
-                )
-                row = result.first()
+                    row = result.first()
         return {"status": "ok", "id": str(row[0])}
     except Exception as e:
         import traceback

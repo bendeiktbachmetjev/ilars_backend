@@ -11,6 +11,7 @@ from sqlalchemy import text
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
 from src.utils.validators import validate_patient_code
+from src.database.rls_context import set_db_context
 
 router = APIRouter()
 
@@ -41,23 +42,24 @@ async def get_next_questionnaire(x_patient_code: Optional[str] = Header(None)):
 
             # 1. Get all patient data and last completion dates in ONE query
             # We also get counts to check if they are a brand new user
-            patient_res = await execute_with_retry(
-                session,
-                text("""
-                    SELECT 
-                        p.id,
-                        p.created_at::DATE as patient_created_date,
-                        (SELECT MAX(entry_date) FROM weekly_entries WHERE patient_id = p.id) as last_weekly_date,
-                        (SELECT MAX(entry_date) FROM monthly_entries WHERE patient_id = p.id) as last_monthly_date,
-                        (SELECT MAX(entry_date) FROM eq5d5l_entries WHERE patient_id = p.id) as last_eq5d5l_date,
-                        (SELECT MAX(entry_date) FROM daily_entries WHERE patient_id = p.id) as last_daily_date,
-                        (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as count_weekly,
-                        (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as count_monthly,
-                        (SELECT COUNT(*) FROM eq5d5l_entries WHERE patient_id = p.id) as count_eq5d5l,
-                        (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as count_daily
-                    FROM patients p
-                    WHERE p.patient_code = :code
-                """).bindparams(code=patient_code))
+            async with set_db_context(session, role='system'):
+                patient_res = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT 
+                            p.id,
+                            p.created_at::DATE as patient_created_date,
+                            (SELECT MAX(entry_date) FROM weekly_entries WHERE patient_id = p.id) as last_weekly_date,
+                            (SELECT MAX(entry_date) FROM monthly_entries WHERE patient_id = p.id) as last_monthly_date,
+                            (SELECT MAX(entry_date) FROM eq5d5l_entries WHERE patient_id = p.id) as last_eq5d5l_date,
+                            (SELECT MAX(entry_date) FROM daily_entries WHERE patient_id = p.id) as last_daily_date,
+                            (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as count_weekly,
+                            (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as count_monthly,
+                            (SELECT COUNT(*) FROM eq5d5l_entries WHERE patient_id = p.id) as count_eq5d5l,
+                            (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as count_daily
+                        FROM patients p
+                        WHERE p.patient_code = :code
+                    """).bindparams(code=patient_code))
 
             if patient_res is None:
                 return {
@@ -154,14 +156,15 @@ async def get_next_questionnaire(x_patient_code: Optional[str] = Header(None)):
                     if milestones_to_check:
                         min_date = min(m[2] for m in milestones_to_check)
                         max_date = max(m[3] for m in milestones_to_check)
-                        check_res = await execute_with_retry(
-                            session,
-                            text("""
-                                SELECT entry_date FROM eq5d5l_entries
-                                WHERE patient_id = :patient_id AND entry_date >= :min_date AND entry_date <= :max_date
-                            """).bindparams(patient_id=patient_id,
-                                            min_date=min_date,
-                                            max_date=max_date))
+                        async with set_db_context(session, role='system'):
+                            check_res = await execute_with_retry(
+                                session,
+                                text("""
+                                    SELECT entry_date FROM eq5d5l_entries
+                                    WHERE patient_id = :patient_id AND entry_date >= :min_date AND entry_date <= :max_date
+                                """).bindparams(patient_id=patient_id,
+                                                min_date=min_date,
+                                                max_date=max_date))
                         filled_dates = set()
                         if check_res:
                             filled_dates = {

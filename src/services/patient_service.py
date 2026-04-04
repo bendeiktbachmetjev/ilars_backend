@@ -6,6 +6,7 @@ from sqlalchemy import text, bindparam, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.queries import execute_with_retry
+from src.database.rls_context import set_db_context
 
 
 class PatientService:
@@ -30,23 +31,24 @@ class PatientService:
         Returns:
             Patient ID (UUID as string)
         """
-        result = await execute_with_retry(
-            session,
-            text("""
-                INSERT INTO patients (patient_code, doctor_id, hospital_id)
-                VALUES (:code, 
-                        CASE WHEN :doctor_id != '' THEN CAST(:doctor_id AS uuid) ELSE NULL END,
-                        CASE WHEN :hospital_id != '' THEN CAST(:hospital_id AS uuid) ELSE NULL END)
-                ON CONFLICT (patient_code) DO UPDATE SET
-                    doctor_id = COALESCE(EXCLUDED.doctor_id, patients.doctor_id),
-                    hospital_id = COALESCE(EXCLUDED.hospital_id, patients.hospital_id)
-                RETURNING id
-            """).bindparams(
-                bindparam('code', value=patient_code),
-                bindparam('doctor_id', value=doctor_id or '', type_=String),
-                bindparam('hospital_id', value=hospital_id or '', type_=String),
+        async with set_db_context(session, role='system'):
+            result = await execute_with_retry(
+                session,
+                text("""
+                    INSERT INTO patients (patient_code, doctor_id, hospital_id)
+                    VALUES (:code, 
+                            CASE WHEN :doctor_id != '' THEN CAST(:doctor_id AS uuid) ELSE NULL END,
+                            CASE WHEN :hospital_id != '' THEN CAST(:hospital_id AS uuid) ELSE NULL END)
+                    ON CONFLICT (patient_code) DO UPDATE SET
+                        doctor_id = COALESCE(EXCLUDED.doctor_id, patients.doctor_id),
+                        hospital_id = COALESCE(EXCLUDED.hospital_id, patients.hospital_id)
+                    RETURNING id
+                """).bindparams(
+                    bindparam('code', value=patient_code),
+                    bindparam('doctor_id', value=doctor_id or '', type_=String),
+                    bindparam('hospital_id', value=hospital_id or '', type_=String),
+                )
             )
-        )
         
         if result is None:
             raise Exception("Failed to get or create patient")
@@ -65,10 +67,11 @@ class PatientService:
         Returns:
             Patient ID or None if not found
         """
-        result = await execute_with_retry(
-            session,
-            text("SELECT id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
-        )
+        async with set_db_context(session, role='system'):
+            result = await execute_with_retry(
+                session,
+                text("SELECT id FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+            )
         
         if result is None:
             return None

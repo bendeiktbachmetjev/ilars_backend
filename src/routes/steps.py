@@ -18,6 +18,7 @@ from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
 from src.utils.validators import validate_patient_code, validate_period
 from src.services.patient_service import PatientService
+from src.database.rls_context import set_db_context
 
 router = APIRouter()
 
@@ -55,16 +56,17 @@ async def get_steps_sync_info(
             if not patient_id:
                 raise HTTPException(status_code=404, detail="Patient not found")
 
-            result = await execute_with_retry(
-                session,
-                text("""
-                    SELECT
-                        (SELECT MAX(step_date) FROM daily_steps WHERE patient_id = :pid),
-                        (SELECT created_at::date FROM patients WHERE id = :pid)
-                """).bindparams(
-                    bindparam('pid', value=patient_id, type_=UUID),
-                ),
-            )
+            async with set_db_context(session, role='patient', user_id=patient_id):
+                result = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT
+                            (SELECT MAX(step_date) FROM daily_steps WHERE patient_id = :pid),
+                            (SELECT created_at::date FROM patients WHERE id = :pid)
+                    """).bindparams(
+                        bindparam('pid', value=patient_id, type_=UUID),
+                    ),
+                )
 
             row = result.first() if result else None
             last_step_date = row[0] if row and row[0] else None
@@ -126,21 +128,22 @@ async def send_steps(
                     )
 
                 saved = 0
-                for entry in payload.steps:
-                    await execute_with_retry(
-                        session,
-                        text("""
-                            INSERT INTO daily_steps (patient_id, step_date, step_count)
-                            VALUES (:pid, :step_date, :step_count)
-                            ON CONFLICT (patient_id, step_date)
-                            DO UPDATE SET step_count = EXCLUDED.step_count
-                        """).bindparams(
-                            bindparam('pid', value=patient_id, type_=UUID),
-                            bindparam('step_date', value=date.fromisoformat(entry.step_date), type_=Date),
-                            bindparam('step_count', value=entry.step_count, type_=Integer),
-                        ),
-                    )
-                    saved += 1
+                async with set_db_context(session, role='patient', user_id=patient_id):
+                    for entry in payload.steps:
+                        await execute_with_retry(
+                            session,
+                            text("""
+                                INSERT INTO daily_steps (patient_id, step_date, step_count)
+                                VALUES (:pid, :step_date, :step_count)
+                                ON CONFLICT (patient_id, step_date)
+                                DO UPDATE SET step_count = EXCLUDED.step_count
+                            """).bindparams(
+                                bindparam('pid', value=patient_id, type_=UUID),
+                                bindparam('step_date', value=date.fromisoformat(entry.step_date), type_=Date),
+                                bindparam('step_count', value=entry.step_count, type_=Integer),
+                            ),
+                        )
+                        saved += 1
 
                 return {"status": "ok", "saved": saved}
     except HTTPException:
@@ -196,10 +199,11 @@ async def get_steps_chart_data(
                 ORDER BY step_date ASC
             """)
 
-            result = await execute_with_retry(
-                session,
-                query.bindparams(bindparam('pid', value=patient_id, type_=UUID))
-            )
+            async with set_db_context(session, role='patient', user_id=patient_id):
+                result = await execute_with_retry(
+                    session,
+                    query.bindparams(bindparam('pid', value=patient_id, type_=UUID))
+                )
 
             data = []
             if result:

@@ -15,6 +15,7 @@ router = APIRouter()
 
 from fastapi import Header
 from src.services.patient_service import PatientService
+from src.database.rls_context import set_db_context
 
 @router.get("/validatePatientCode")
 async def validate_patient_code_endpoint(x_patient_code: str = Header(None, description="Patient Code")):
@@ -81,10 +82,11 @@ async def get_patient_profile(x_patient_code: str = Header(..., description="Pat
                 return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
                 
             # 2. Get profile tracking row
-            result = await execute_with_retry(
-                session,
-                text("SELECT email, agreed_to_terms, agreed_to_promos FROM patients WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
-            )
+            async with set_db_context(session, role='patient', user_id=patient_id):
+                result = await execute_with_retry(
+                    session,
+                    text("SELECT email, agreed_to_terms, agreed_to_promos FROM patients WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
+                )
             
             row = result.first()
             if not row:
@@ -129,11 +131,12 @@ async def unsubscribe_patient(x_patient_code: str = Header(..., description="Pat
             if not patient_id:
                 return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
             
-            await execute_with_retry(
-                session,
-                text("UPDATE patients SET agreed_to_promos = false, email = NULL WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
-            )
-            await session.commit()
+            async with set_db_context(session, role='patient', user_id=patient_id):
+                await execute_with_retry(
+                    session,
+                    text("UPDATE patients SET agreed_to_promos = false, email = NULL WHERE id = CAST(:pid AS UUID)").bindparams(pid=patient_id)
+                )
+                await session.commit()
             
             return {"status": "ok"}
     except Exception as e:
@@ -174,14 +177,15 @@ async def subscribe_patient(
             if not patient_id:
                 return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
             
-            await execute_with_retry(
-                session,
-                text("UPDATE patients SET agreed_to_promos = true, email = :email WHERE id = CAST(:pid AS UUID)").bindparams(
-                    email=payload.email,
-                    pid=patient_id
+            async with set_db_context(session, role='patient', user_id=patient_id):
+                await execute_with_retry(
+                    session,
+                    text("UPDATE patients SET agreed_to_promos = true, email = :email WHERE id = CAST(:pid AS UUID)").bindparams(
+                        email=payload.email,
+                        pid=patient_id
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
             
             return {"status": "ok"}
     except Exception as e:
@@ -222,22 +226,23 @@ async def update_patient_profile(
                 return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
             
             # 2. Update optional profile fields
-            await execute_with_retry(
-                session,
-                text("""
-                    UPDATE patients 
-                    SET email = :email, 
-                        agreed_to_terms = :terms, 
-                        agreed_to_promos = :promos
-                    WHERE id = CAST(:pid AS UUID)
-                """).bindparams(
-                    email=payload.email,
-                    terms=payload.agreed_to_terms,
-                    promos=payload.agreed_to_promos,
-                    pid=patient_id
+            async with set_db_context(session, role='patient', user_id=patient_id):
+                await execute_with_retry(
+                    session,
+                    text("""
+                        UPDATE patients 
+                        SET email = :email, 
+                            agreed_to_terms = :terms, 
+                            agreed_to_promos = :promos
+                        WHERE id = CAST(:pid AS UUID)
+                    """).bindparams(
+                        email=payload.email,
+                        terms=payload.agreed_to_terms,
+                        promos=payload.agreed_to_promos,
+                        pid=patient_id
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
             
             return {"status": "ok"}
     except Exception as e:
@@ -304,38 +309,39 @@ async def get_patients(
 
             # Get patients from the same hospital with doctor and hospital codes + doctor name
             # Sort: first patients of current doctor, then other patients from same hospital
-            result = await execute_with_retry(
-                session,
-                text(f"""
-                    SELECT 
-                        p.patient_code,
-                        p.created_at,
-                        p.doctor_id,
-                        p.hospital_id,
-                        p.status,
-                        p.status_reason,
-                        d.doctor_code,
-                        h.code as hospital_code,
-                        d.first_name,
-                        d.last_name,
-                        (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
-                        (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
-                        (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
-                        (SELECT total_score FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_score,
-                        (SELECT entry_date FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_date,
-                        (SELECT health_vas FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_score,
-                        (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
-                    FROM patients p
-                    LEFT JOIN doctors d ON p.doctor_id = d.id
-                    LEFT JOIN hospitals h ON p.hospital_id = h.id
-                    WHERE 
-                        (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid))
-                        {status_filter}
-                    ORDER BY 
-                        CASE WHEN p.doctor_id = CAST(:doctor_id AS uuid) THEN 0 ELSE 1 END,
-                        p.created_at DESC
-                """).bindparams(hospital_id=hospital_id, doctor_id=doctor_id)
-            )
+            async with set_db_context(session, role='doctor', doctor_id=doctor_id, hospital_id=hospital_id):
+                result = await execute_with_retry(
+                    session,
+                    text(f"""
+                        SELECT 
+                            p.patient_code,
+                            p.created_at,
+                            p.doctor_id,
+                            p.hospital_id,
+                            p.status,
+                            p.status_reason,
+                            d.doctor_code,
+                            h.code as hospital_code,
+                            d.first_name,
+                            d.last_name,
+                            (SELECT COUNT(*) FROM weekly_entries WHERE patient_id = p.id) as weekly_count,
+                            (SELECT COUNT(*) FROM daily_entries WHERE patient_id = p.id) as daily_count,
+                            (SELECT COUNT(*) FROM monthly_entries WHERE patient_id = p.id) as monthly_count,
+                            (SELECT total_score FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_score,
+                            (SELECT entry_date FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_date,
+                            (SELECT health_vas FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_score,
+                            (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
+                        FROM patients p
+                        LEFT JOIN doctors d ON p.doctor_id = d.id
+                        LEFT JOIN hospitals h ON p.hospital_id = h.id
+                        WHERE 
+                            (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid))
+                            {status_filter}
+                        ORDER BY 
+                            CASE WHEN p.doctor_id = CAST(:doctor_id AS uuid) THEN 0 ELSE 1 END,
+                            p.created_at DESC
+                    """).bindparams(hospital_id=hospital_id, doctor_id=doctor_id)
+                )
             
             if result is None:
                 return JSONResponse(
@@ -428,10 +434,11 @@ async def get_patient_detail(
             hospital_id = str(doctor_row[0])
             
             # Get patient_id and verify it belongs to the same hospital
-            patient_res = await execute_with_retry(
-                session,
-                text("SELECT id, created_at, hospital_id, status, status_reason FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
-            )
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                patient_res = await execute_with_retry(
+                    session,
+                    text("SELECT id, created_at, hospital_id, status, status_reason FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+                )
             if patient_res is None:
                 return JSONResponse(
                     status_code=503,
@@ -452,16 +459,17 @@ async def get_patient_detail(
             if patient_hospital_id != hospital_id:
                 raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
             
-            # Get LARS scores over time
-            lars_res = await execute_with_retry(
-                session,
-                text("""
-                    SELECT entry_date, total_score
-                    FROM weekly_entries
-                    WHERE patient_id = :pid AND total_score IS NOT NULL
-                    ORDER BY entry_date ASC
-                """).bindparams(pid=patient_id)
-            )
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                # Get LARS scores over time
+                lars_res = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT entry_date, total_score
+                        FROM weekly_entries
+                        WHERE patient_id = :pid AND total_score IS NOT NULL
+                        ORDER BY entry_date ASC
+                    """).bindparams(pid=patient_id)
+                )
             lars_data = []
             if lars_res:
                 for row in lars_res.fetchall():
@@ -470,16 +478,17 @@ async def get_patient_detail(
                         "score": row[1]
                     })
             
-            # Get EQ-5D-5L scores over time
-            eq5d5l_res = await execute_with_retry(
-                session,
-                text("""
-                    SELECT entry_date, health_vas
-                    FROM eq5d5l_entries
-                    WHERE patient_id = :pid AND health_vas IS NOT NULL
-                    ORDER BY entry_date ASC
-                """).bindparams(pid=patient_id)
-            )
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                # Get EQ-5D-5L scores over time
+                eq5d5l_res = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT entry_date, health_vas
+                        FROM eq5d5l_entries
+                        WHERE patient_id = :pid AND health_vas IS NOT NULL
+                        ORDER BY entry_date ASC
+                    """).bindparams(pid=patient_id)
+                )
             eq5d5l_data = []
             if eq5d5l_res:
                 for row in eq5d5l_res.fetchall():
@@ -488,25 +497,25 @@ async def get_patient_detail(
                         "score": row[1]
                     })
             
-            # Daily questionnaires for doctor charts: use a long window so older data still appears
-            # if the patient has not submitted daily forms recently (30-day-only hid all history).
-            daily_res = await execute_with_retry(
-                session,
-                text("""
-                    SELECT 
-                        entry_date,
-                        food_vegetables_all, food_root_vegetables, food_whole_grains,
-                        food_whole_grain_bread, food_nuts_and_seeds, food_legumes,
-                        food_fruits_with_skin, food_berries, food_soft_fruits_no_skin, food_muesli_and_bran,
-                        drink_water, drink_coffee, drink_tea, drink_alcohol,
-                        drink_carbonated, drink_juices, drink_dairy, drink_energy,
-                        bristol_scale, stool_count, bloating, impact_score
-                    FROM daily_entries
-                    WHERE patient_id = :pid
-                        AND entry_date >= CURRENT_DATE - INTERVAL '730 days'
-                    ORDER BY entry_date ASC
-                """).bindparams(pid=patient_id)
-            )
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                # Daily questionnaires for doctor charts
+                daily_res = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT 
+                            entry_date,
+                            food_vegetables_all, food_root_vegetables, food_whole_grains,
+                            food_whole_grain_bread, food_nuts_and_seeds, food_legumes,
+                            food_fruits_with_skin, food_berries, food_soft_fruits_no_skin, food_muesli_and_bran,
+                            drink_water, drink_coffee, drink_tea, drink_alcohol,
+                            drink_carbonated, drink_juices, drink_dairy, drink_energy,
+                            bristol_scale, stool_count, bloating, impact_score
+                        FROM daily_entries
+                        WHERE patient_id = :pid
+                            AND entry_date >= CURRENT_DATE - INTERVAL '730 days'
+                        ORDER BY entry_date ASC
+                    """).bindparams(pid=patient_id)
+                )
             daily_data = []
             if daily_res:
                 for row in daily_res.fetchall():
@@ -540,16 +549,17 @@ async def get_patient_detail(
                         "impact_score": float(row[22]) if row[22] else 0,
                     })
             
-            # Get daily step counts (one row per day)
-            steps_res = await execute_with_retry(
-                session,
-                text("""
-                    SELECT step_date, step_count
-                    FROM daily_steps
-                    WHERE patient_id = :pid
-                    ORDER BY step_date ASC
-                """).bindparams(pid=patient_id)
-            )
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                # Get daily step counts (one row per day)
+                steps_res = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT step_date, step_count
+                        FROM daily_steps
+                        WHERE patient_id = :pid
+                        ORDER BY step_date ASC
+                    """).bindparams(pid=patient_id)
+                )
             steps_data = []
             if steps_res:
                 for row in steps_res.fetchall():
@@ -645,20 +655,21 @@ async def create_patient(claims: dict = Depends(get_current_user)):
             
             patient_code = code_result.scalar()
             
-            # Create patient with doctor_id and hospital_id
-            patient_result = await execute_with_retry(
-                session,
-                text("""
-                    INSERT INTO patients (patient_code, doctor_id, hospital_id)
-                    VALUES (:code, CAST(:doctor_id AS uuid), CAST(:hospital_id AS uuid))
-                    RETURNING id, created_at
-                """).bindparams(
-                    code=patient_code,
-                    doctor_id=doctor_id,
-                    hospital_id=hospital_id
+            async with set_db_context(session, role='doctor', doctor_id=doctor_id, hospital_id=hospital_id):
+                # Create patient with doctor_id and hospital_id
+                patient_result = await execute_with_retry(
+                    session,
+                    text("""
+                        INSERT INTO patients (patient_code, doctor_id, hospital_id)
+                        VALUES (:code, CAST(:doctor_id AS uuid), CAST(:hospital_id AS uuid))
+                        RETURNING id, created_at
+                    """).bindparams(
+                        code=patient_code,
+                        doctor_id=doctor_id,
+                        hospital_id=hospital_id
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
             
             if not patient_result:
                 raise HTTPException(status_code=500, detail="Failed to create patient")
@@ -733,10 +744,11 @@ async def update_patient_status(
 
             hospital_id = str(doctor_row[0])
 
-            patient_res = await execute_with_retry(
-                session,
-                text("SELECT id, hospital_id, status FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
-            )
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                patient_res = await execute_with_retry(
+                    session,
+                    text("SELECT id, hospital_id, status FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+                )
             if patient_res is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
 
@@ -752,32 +764,34 @@ async def update_patient_status(
                 raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
 
             if patient_status != body.status:
+                async with set_db_context(session, role='doctor', hospital_id=hospital_id):
+                    await execute_with_retry(
+                        session,
+                        text("""
+                            INSERT INTO patient_status_history (patient_id, previous_status, new_status, reason)
+                            VALUES (:patient_id, :prev_status, :new_status, :reason)
+                        """).bindparams(
+                            patient_id=patient_id,
+                            prev_status=patient_status,
+                            new_status=body.status,
+                            reason=body.status_reason or None
+                        )
+                    )
+
+            async with set_db_context(session, role='doctor', hospital_id=hospital_id):
                 await execute_with_retry(
                     session,
                     text("""
-                        INSERT INTO patient_status_history (patient_id, previous_status, new_status, reason)
-                        VALUES (:patient_id, :prev_status, :new_status, :reason)
+                        UPDATE patients
+                        SET status = :status, status_reason = :status_reason
+                        WHERE patient_code = :code
                     """).bindparams(
-                        patient_id=patient_id,
-                        prev_status=patient_status,
-                        new_status=body.status,
-                        reason=body.status_reason or None
+                        code=patient_code,
+                        status=body.status,
+                        status_reason=body.status_reason or None
                     )
                 )
-
-            await execute_with_retry(
-                session,
-                text("""
-                    UPDATE patients
-                    SET status = :status, status_reason = :status_reason
-                    WHERE patient_code = :code
-                """).bindparams(
-                    code=patient_code,
-                    status=body.status,
-                    status_reason=body.status_reason or None
-                )
-            )
-            await session.commit()
+                await session.commit()
 
             return {
                 "status": "ok",

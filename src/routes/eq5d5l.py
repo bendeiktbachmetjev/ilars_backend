@@ -11,6 +11,7 @@ from src.models.schemas import Eq5d5lPayload
 from src.database.connection import get_session, is_initialized
 from src.utils.validators import validate_patient_code
 from src.services.patient_service import PatientService
+from src.database.rls_context import set_db_context
 
 router = APIRouter()
 
@@ -45,39 +46,40 @@ async def send_eq5d5l(payload: Eq5d5lPayload, x_patient_code: Optional[str] = He
                         except Exception:
                             health_vas = None
                 
-                # Save EQ-5D-5L entry
-                result = await session.execute(
-                    text("""
-                        INSERT INTO eq5d5l_entries (
-                            patient_id, entry_date,
-                            mobility, self_care, usual_activities,
-                            pain_discomfort, anxiety_depression, health_vas
-                        ) VALUES (
-                            :patient_id,
-                            COALESCE(CAST(:entry_date AS DATE), CURRENT_DATE),
-                            :mobility, :self_care, :usual_activities,
-                            :pain_discomfort, :anxiety_depression, :health_vas
+                async with set_db_context(session, role='patient', user_id=patient_id_str):
+                    # Save EQ-5D-5L entry
+                    result = await session.execute(
+                        text("""
+                            INSERT INTO eq5d5l_entries (
+                                patient_id, entry_date,
+                                mobility, self_care, usual_activities,
+                                pain_discomfort, anxiety_depression, health_vas
+                            ) VALUES (
+                                :patient_id,
+                                COALESCE(CAST(:entry_date AS DATE), CURRENT_DATE),
+                                :mobility, :self_care, :usual_activities,
+                                :pain_discomfort, :anxiety_depression, :health_vas
+                            )
+                            ON CONFLICT (patient_id, entry_date) DO UPDATE SET
+                                mobility = EXCLUDED.mobility,
+                                self_care = EXCLUDED.self_care,
+                                usual_activities = EXCLUDED.usual_activities,
+                                pain_discomfort = EXCLUDED.pain_discomfort,
+                                anxiety_depression = EXCLUDED.anxiety_depression,
+                                health_vas = EXCLUDED.health_vas
+                            RETURNING id
+                        """).bindparams(
+                            patient_id=patient_id,
+                            entry_date=payload.entry_date,
+                            mobility=payload.mobility,
+                            self_care=payload.self_care,
+                            usual_activities=payload.usual_activities,
+                            pain_discomfort=payload.pain_discomfort,
+                            anxiety_depression=payload.anxiety_depression,
+                            health_vas=health_vas,
                         )
-                        ON CONFLICT (patient_id, entry_date) DO UPDATE SET
-                            mobility = EXCLUDED.mobility,
-                            self_care = EXCLUDED.self_care,
-                            usual_activities = EXCLUDED.usual_activities,
-                            pain_discomfort = EXCLUDED.pain_discomfort,
-                            anxiety_depression = EXCLUDED.anxiety_depression,
-                            health_vas = EXCLUDED.health_vas
-                        RETURNING id
-                    """).bindparams(
-                        patient_id=patient_id,
-                        entry_date=payload.entry_date,
-                        mobility=payload.mobility,
-                        self_care=payload.self_care,
-                        usual_activities=payload.usual_activities,
-                        pain_discomfort=payload.pain_discomfort,
-                        anxiety_depression=payload.anxiety_depression,
-                        health_vas=health_vas,
                     )
-                )
-                row = result.first()
+                    row = result.first()
         return {"status": "ok", "id": str(row[0])}
     except Exception as e:
         import traceback
