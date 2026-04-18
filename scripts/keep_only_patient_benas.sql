@@ -1,4 +1,4 @@
--- Keep only patient BENAS; remove all other patients and their data (CASCADE).
+-- Keep only patient BENAS and D99KA9JYS8PJ; remove all other patients and their data (CASCADE).
 -- Does NOT touch doctors, hospitals, or auth.
 --
 -- Prerequisites: PostgreSQL, same DB as the app (Supabase/Railway/etc.).
@@ -10,26 +10,26 @@
 
 BEGIN;
 
--- 1) Show who will be kept (case-insensitive match on patient_code)
+-- 1) Show who will be kept
 SELECT id, patient_code, created_at
 FROM patients
-WHERE UPPER(TRIM(patient_code)) = 'BENAS';
+WHERE UPPER(TRIM(patient_code)) IN ('BENAS', 'D99KA9JYS8PJ');
 
--- 2) Abort if there is no such patient or duplicate codes (should not happen)
+-- 2) Abort if we have duplicates for the same code
 DO $$
 DECLARE
   keeper_count int;
 BEGIN
   SELECT COUNT(*) INTO keeper_count
   FROM patients
-  WHERE UPPER(TRIM(patient_code)) = 'BENAS';
+  WHERE UPPER(TRIM(patient_code)) IN ('BENAS', 'D99KA9JYS8PJ');
 
   IF keeper_count = 0 THEN
-    RAISE EXCEPTION 'No patient with code BENAS (case-insensitive). Nothing deleted. Run SELECT * FROM patients; to see codes.';
+    RAISE EXCEPTION 'No patients with codes BENAS or D99KA9JYS8PJ found. Nothing deleted. Run SELECT * FROM patients; to see codes.';
   END IF;
 
-  IF keeper_count > 1 THEN
-    RAISE EXCEPTION 'Multiple rows match BENAS. Resolve duplicates manually before running this script.';
+  IF keeper_count > 2 THEN
+    RAISE EXCEPTION 'More than 2 rows match BENAS and D99KA9JYS8PJ. Resolve duplicates manually before running this script.';
   END IF;
 END $$;
 
@@ -39,7 +39,7 @@ DELETE FROM patients
 WHERE id NOT IN (
   SELECT id
   FROM patients
-  WHERE UPPER(TRIM(patient_code)) = 'BENAS'
+  WHERE UPPER(TRIM(patient_code)) IN ('BENAS', 'D99KA9JYS8PJ')
 );
 
 -- 4) Verify
