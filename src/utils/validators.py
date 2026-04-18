@@ -32,20 +32,26 @@ def validate_patient_code(patient_code: Optional[str]) -> str:
 def validate_period(period: str) -> str:
     """
     Validate time period parameter
-    
+
     Args:
-        period: Period to validate (weekly, monthly, yearly)
-        
+        period: Period to validate. Allowed values:
+            - "weekly"    (7 days)
+            - "monthly"   (30 days)
+            - "3months"   (90 days)
+            - "6months"   (180 days)
+            - "yearly"    (365 days)
+
     Returns:
         Validated period
-        
+
     Raises:
         HTTPException: If period is invalid
     """
-    if period not in ["weekly", "monthly", "yearly"]:
+    allowed = ["weekly", "monthly", "3months", "6months", "yearly"]
+    if period not in allowed:
         raise HTTPException(
             status_code=400,
-            detail="Invalid period. Must be 'weekly', 'monthly', or 'yearly'"
+            detail=f"Invalid period. Must be one of: {', '.join(allowed)}"
         )
     return period
 

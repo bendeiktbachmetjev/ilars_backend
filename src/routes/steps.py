@@ -165,9 +165,11 @@ async def get_steps_chart_data(
     """
     Get historical steps data for charts within a fixed time window.
     Returns raw daily step counts (no aggregation) ordered chronologically:
-      - weekly  -> last 7 days
-      - monthly -> last 30 days
-      - yearly  -> last 365 days
+      - weekly   -> last 7 days
+      - monthly  -> last 30 days
+      - 3months  -> last 90 days
+      - 6months  -> last 180 days
+      - yearly   -> last 365 days
     """
     patient_code = validate_patient_code(x_patient_code)
     period = validate_period(period)
@@ -185,13 +187,15 @@ async def get_steps_chart_data(
             if not patient_id:
                 return {"status": "ok", "data": []}
 
-            # Keep windows in sync with getLarsData so both series live on the same X range.
-            if period == "weekly":
-                window_days = 7
-            elif period == "monthly":
-                window_days = 30
-            else:
-                window_days = 365
+            # Keep windows in sync with getLarsData so both series live on
+            # the exact same X range.
+            window_days = {
+                "weekly": 7,
+                "monthly": 30,
+                "3months": 90,
+                "6months": 180,
+                "yearly": 365,
+            }[period]
 
             query = text(f"""
                 SELECT step_date, step_count

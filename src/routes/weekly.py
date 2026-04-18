@@ -98,9 +98,11 @@ async def get_lars_data(
     """
     Get LARS score data for a patient within a fixed time window.
     Returns raw entries (no averaging) ordered chronologically:
-      - weekly  -> last 7 days
-      - monthly -> last 30 days
-      - yearly  -> last 365 days
+      - weekly   -> last 7 days
+      - monthly  -> last 30 days
+      - 3months  -> last 90 days
+      - 6months  -> last 180 days
+      - yearly   -> last 365 days
     """
     patient_code = validate_patient_code(x_patient_code)
     period = validate_period(period)
@@ -112,13 +114,15 @@ async def get_lars_data(
     if not session_maker:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    # Map period to a date window in days. Keep boundaries strict and equal for steps and LARS.
-    if period == "weekly":
-        window_days = 7
-    elif period == "monthly":
-        window_days = 30
-    else:  # yearly
-        window_days = 365
+    # Map period to a date window in days. Keep boundaries strict and equal
+    # for steps and LARS so both series live on the exact same X range.
+    window_days = {
+        "weekly": 7,
+        "monthly": 30,
+        "3months": 90,
+        "6months": 180,
+        "yearly": 365,
+    }[period]
 
     try:
         async with session_maker() as session:
