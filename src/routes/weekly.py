@@ -96,19 +96,30 @@ async def get_lars_data(
     x_patient_code: Optional[str] = Header(None)
 ):
     """
-    Get LARS score data for a patient grouped by time period.
-    Returns data points with entry_date and total_score for the specified period.
+    Get LARS score data for a patient within a fixed time window.
+    Returns raw entries (no averaging) ordered chronologically:
+      - weekly  -> last 7 days
+      - monthly -> last 30 days
+      - yearly  -> last 365 days
     """
     patient_code = validate_patient_code(x_patient_code)
     period = validate_period(period)
-    
+
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
-    
+
     session_maker = get_session()
     if not session_maker:
         raise HTTPException(status_code=503, detail="Database not configured")
-    
+
+    # Map period to a date window in days. Keep boundaries strict and equal for steps and LARS.
+    if period == "weekly":
+        window_days = 7
+    elif period == "monthly":
+        window_days = 30
+    else:  # yearly
+        window_days = 365
+
     try:
         async with session_maker() as session:
             patient_id_str = await PatientService.get_patient_id(session, patient_code)
@@ -116,71 +127,34 @@ async def get_lars_data(
                 return JSONResponse(status_code=404, content={"status": "error", "detail": "Patient not found"})
 
             async with set_db_context(session, role='patient', user_id=patient_id_str):
-                # Build query based on period
-                if period == "weekly":
-                    query = text("""
-                        SELECT 
-                            DATE_TRUNC('week', we.entry_date) as period_start,
-                            AVG(we.total_score)::INTEGER as avg_score,
-                            MIN(we.entry_date) as first_entry_date
-                        FROM weekly_entries we
-                        INNER JOIN patients p ON p.id = we.patient_id
-                        WHERE p.patient_code = :code
-                            AND we.total_score IS NOT NULL
-                        GROUP BY DATE_TRUNC('week', we.entry_date)
-                        ORDER BY period_start DESC
-                        LIMIT 5
-                    """)
-                elif period == "monthly":
-                    query = text("""
-                        SELECT 
-                            DATE_TRUNC('month', we.entry_date) as period_start,
-                            AVG(we.total_score)::INTEGER as avg_score,
-                            MIN(we.entry_date) as first_entry_date
-                        FROM weekly_entries we
-                        INNER JOIN patients p ON p.id = we.patient_id
-                        WHERE p.patient_code = :code
-                            AND we.total_score IS NOT NULL
-                            AND we.entry_date >= CURRENT_DATE - INTERVAL '6 months'
-                        GROUP BY DATE_TRUNC('month', we.entry_date)
-                        ORDER BY period_start ASC
-                    """)
-                else:  # yearly
-                    query = text("""
-                        SELECT 
-                            DATE_TRUNC('year', we.entry_date) as period_start,
-                            AVG(we.total_score)::INTEGER as avg_score,
-                            MIN(we.entry_date) as first_entry_date
-                        FROM weekly_entries we
-                        INNER JOIN patients p ON p.id = we.patient_id
-                        WHERE p.patient_code = :code
-                            AND we.total_score IS NOT NULL
-                            AND we.entry_date >= CURRENT_DATE - INTERVAL '5 years'
-                        GROUP BY DATE_TRUNC('year', we.entry_date)
-                        ORDER BY period_start ASC
-                    """)
-                
+                # Return individual entries, not aggregates, so the chart can show concrete values.
+                query = text(f"""
+                    SELECT we.entry_date, we.total_score
+                    FROM weekly_entries we
+                    INNER JOIN patients p ON p.id = we.patient_id
+                    WHERE p.patient_code = :code
+                      AND we.total_score IS NOT NULL
+                      AND we.entry_date >= CURRENT_DATE - INTERVAL '{window_days} days'
+                    ORDER BY we.entry_date ASC
+                """)
+
                 result = await execute_with_retry(session, query.bindparams(code=patient_code))
                 if result is None:
                     return JSONResponse(
                         status_code=503,
                         content={"status": "error", "detail": "Database connection pool exhausted, please try again"}
                     )
-                
+
                 rows = result.fetchall()
-            
-            # Reverse if ordered DESC to get chronological order
-            if period == "weekly" and rows:
-                rows = list(reversed(rows))
-            
+
             data = []
             for idx, row in enumerate(rows, start=1):
                 data.append({
                     "index": idx,
-                    "date": row[2].isoformat() if row[2] else None,
-                    "score": row[1] if row[1] is not None else None
+                    "date": row[0].isoformat() if row[0] else None,
+                    "score": int(row[1]) if row[1] is not None else None,
                 })
-            
+
             return {"status": "ok", "data": data}
     except HTTPException:
         raise
