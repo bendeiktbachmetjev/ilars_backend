@@ -281,6 +281,38 @@ async def update_registry_patient(body: dict = Body(...), doctor: dict = Depends
         return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
+@router.post("/deleteRegistryPatient")
+async def delete_registry_patient(body: dict = Body(...), doctor: dict = Depends(get_lithuanian_doctor)):
+    """Delete a registry record. Owner-only (explicit doctor_id filter + RLS)."""
+    rid = body.get("id")
+    if not rid:
+        raise HTTPException(status_code=400, detail="Missing registry record id")
+
+    session_maker = get_session()
+    try:
+        async with session_maker() as session:
+            async with set_db_context(session, role='doctor', doctor_id=doctor["doctor_id"], hospital_id=doctor["hospital_id"]):
+                res = await execute_with_retry(
+                    session,
+                    text("""
+                        DELETE FROM registry_patients
+                        WHERE id = CAST(:rid AS uuid) AND doctor_id = CAST(:did AS uuid)
+                        RETURNING id
+                    """).bindparams(rid=rid, did=doctor["doctor_id"])
+                )
+                await session.commit()
+            if not (res and res.first()):
+                raise HTTPException(status_code=403, detail="Not found or not your record")
+            return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"Error in deleteRegistryPatient: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+
+
 @router.post("/linkRegistryToStudy")
 async def link_registry_to_study(body: dict = Body(...), doctor: dict = Depends(get_lithuanian_doctor)):
     """Link a registry record (owned by the doctor) to a study patient in the doctor's hospital."""
