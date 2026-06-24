@@ -37,17 +37,24 @@ async def set_db_context(
         )
         yield session
     finally:
-        # Reset to safe defaults to avoid bleeding across connections
-        await execute_with_retry(
-            session, 
-            text("""
-                SELECT 
-                    set_config('app.current_role', 'none', false),
-                    set_config('app.current_user_id', '', false),
-                    set_config('app.doctor_id', '', false),
-                    set_config('app.hospital_id', '', false);
-            """)
-        )
+        # Reset to safe defaults to avoid bleeding across connections.
+        # Wrapped in try/except: if the body raised and left the transaction in an
+        # aborted state, this reset would itself fail with InFailedSQLTransactionError
+        # and MASK the original error. Suppressing it lets the real error propagate.
+        # (On the success path the reset runs normally.)
+        try:
+            await execute_with_retry(
+                session,
+                text("""
+                    SELECT
+                        set_config('app.current_role', 'none', false),
+                        set_config('app.current_user_id', '', false),
+                        set_config('app.doctor_id', '', false),
+                        set_config('app.hospital_id', '', false);
+                """)
+            )
+        except Exception:
+            pass
 
 # Helper function
 async def apply_system_context(session: AsyncSession):
