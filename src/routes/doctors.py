@@ -67,7 +67,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                     SELECT d.id, d.firebase_uid, d.email, d.first_name, d.last_name,
                            d.hospital_id, d.created_at, d.updated_at,
                            d.doctor_code,
-                           h.name as hospital_name
+                           h.name as hospital_name, h.code as hospital_code
                     FROM doctors d
                     LEFT JOIN hospitals h ON d.hospital_id = h.id
                     WHERE d.firebase_uid = :uid
@@ -113,7 +113,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                         SELECT d.id, d.firebase_uid, d.email, d.first_name, d.last_name,
                                d.hospital_id, d.created_at, d.updated_at,
                                d.doctor_code,
-                               h.name as hospital_name
+                               h.name as hospital_name, h.code as hospital_code
                         FROM doctors d
                         LEFT JOIN hospitals h ON d.hospital_id = h.id
                         WHERE d.firebase_uid = :uid
@@ -126,7 +126,10 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
             hospital_id = str(row[5]) if row[5] else None
             doctor_code = row[8] if len(row) > 8 and row[8] else None
             hospital_name = row[9] if len(row) > 9 and row[9] else None
-            
+            hospital_code = row[10] if len(row) > 10 and row[10] else None
+            # Lithuanian doctors (hospital code starts with 'LT') get access to the registry.
+            is_lithuania = bool(hospital_code and hospital_code.startswith("LT"))
+
             # Profile is complete only if hospital_id exists (doctor_code is auto-generated)
             needs_profile = not hospital_id
 
@@ -145,6 +148,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                     "updated_at": row[7].isoformat() if row[7] else None,
                 },
                 "needs_profile": needs_profile,
+                "is_lithuania": is_lithuania,
             }
     except HTTPException:
         raise
