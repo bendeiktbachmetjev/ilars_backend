@@ -128,6 +128,7 @@ _SELECT_COLS = """
     d.first_name AS owner_first_name,
     d.last_name AS owner_last_name,
     d.doctor_code AS owner_doctor_code,
+    h.name AS hospital_name,
     sp.patient_code AS study_patient_code
 """
 
