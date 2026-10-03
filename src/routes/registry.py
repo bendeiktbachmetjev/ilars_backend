@@ -61,7 +61,7 @@ INT_FIELDS = {
     "operation_duration_min", "blood_loss_ml", "tme_quality", "ileostomy",
     "complications", "anastomotic_leak", "reoperation_30d", "rehospitalization_30d",
     "hospital_stay_days", "death_30d", "ln_removed", "ln_positive", "lvi", "pni",
-    "dworak_trg", "mts_development", "local_recurrence", "vital_status",
+    "dworak_trg", "act_cycles", "art", "mts_development", "local_recurrence", "vital_status",
     "cancer_related_death", "lars_baseline", "lars_0m", "lars_3m", "lars_6m",
     "lars_12m", "lars_category_12m", "wexner_0m", "wexner_12m",
 }
