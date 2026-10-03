@@ -22,6 +22,9 @@ postgres://USER:PASSWORD@HOST:PORT/DBNAME
 - `daily_entries`: daily metrics; structured columns + flexible JSONB payloads
 - `monthly_entries`: monthly QoL or similar; optional scores + JSONB payloads
 
+### Questionnaire schedule
+Which questionnaire a patient gets each day (one per day, priorities, EQ-5D-5L time points, edge cases): see [docs/questionnaire-schedule.md](docs/questionnaire-schedule.md).
+
 ### Analytics guidance
 - Use `idx_*_patient_date` for per-patient time series queries
 - Use JSONB GIN indexes for ad-hoc filtering and future fields

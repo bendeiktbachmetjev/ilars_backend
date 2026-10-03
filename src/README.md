@@ -23,7 +23,8 @@ app/
 │   └── questionnaire.py # Questionnaire logic endpoints
 ├── services/            # Business logic layer
 │   ├── __init__.py
-│   └── patient_service.py
+│   ├── patient_service.py
+│   └── questionnaire_schedule.py  # Which questionnaire today (see docs/questionnaire-schedule.md)
 ├── database/            # Database connection and utilities
 │   ├── __init__.py
 │   ├── connection.py    # Database connection management
