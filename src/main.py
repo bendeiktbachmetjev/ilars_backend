@@ -3,6 +3,7 @@ Main FastAPI application
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from src.config import settings
 from src.database.connection import init_database, is_initialized
@@ -24,6 +25,9 @@ app.add_middleware(
     allow_methods=settings.CORS_ALLOW_METHODS,
     allow_headers=settings.CORS_ALLOW_HEADERS,
 )
+
+# Compress JSON responses over 1 KB (doctor patient list and detail shrink about 10x)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Initialize database
 init_database()

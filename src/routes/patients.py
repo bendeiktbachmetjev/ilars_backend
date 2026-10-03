@@ -15,6 +15,7 @@ router = APIRouter()
 
 from fastapi import Header
 from src.services.patient_service import PatientService
+from src.services import patient_views
 from src.database.rls_context import set_db_context
 
 @router.get("/validatePatientCode")
@@ -258,6 +259,7 @@ async def update_patient_profile(
 @router.get("/getPatients")
 async def get_patients(
     status: str = Query("active", description="active | inactive | all"),
+    include: str | None = Query(None, description="Optional extra blocks, comma separated: lars_history"),
     claims: dict = Depends(get_current_user)
 ):
     """
@@ -266,6 +268,8 @@ async def get_patients(
     status=active (default): only active patients
     status=inactive: only inactive patients (archived)
     status=all: all patients with status field
+    include=lars_history: also return every scored LARS per patient (cohort overview)
+    Extension v2 keys (additive): see patient_views.list_extension and docs/doctor-api-v2.md.
     """
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -284,7 +288,7 @@ async def get_patients(
             # Get doctor's hospital_id and doctor_id
             doctor_result = await execute_with_retry(
                 session,
-                text("SELECT id, hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+                text("SELECT id, hospital_id, CURRENT_DATE FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
             )
             if doctor_result is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
@@ -296,6 +300,8 @@ async def get_patients(
             
             doctor_id = str(doctor_row[0])
             hospital_id = str(doctor_row[1])
+            as_of_date = doctor_row[2]
+            include_blocks = patient_views.parse_include(include)
 
             # Debug logging to understand filtering issues
             print(f"[getPatients] uid={uid}, doctor_id={doctor_id}, hospital_id={hospital_id}")
@@ -330,10 +336,54 @@ async def get_patients(
                             (SELECT total_score FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_score,
                             (SELECT entry_date FROM weekly_entries WHERE patient_id = p.id AND total_score IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_lars_date,
                             (SELECT health_vas FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_score,
-                            (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date
+                            (SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND health_vas IS NOT NULL ORDER BY entry_date DESC LIMIT 1) as last_eq5d5l_date,
+                            -- extension v2 (appended; read by name in patient_views.list_extension)
+                            wk.last_weekly_date,
+                            wk.lars_dates,
+                            wk.lars_values,
+                            eq.eq5d5l_count,
+                            eq.last_eq5d5l_entry_date,
+                            eq.vas_dates,
+                            eq.vas_values,
+                            (SELECT MAX(entry_date) FROM daily_entries WHERE patient_id = p.id) AS last_daily_date,
+                            (SELECT MAX(entry_date) FROM monthly_entries WHERE patient_id = p.id) AS last_monthly_date,
+                            adh.days_with_entry AS adherence_days_with_entry,
+                            GREATEST(0, win.end_day - win.start_day + 1) AS adherence_days_expected
                         FROM patients p
                         LEFT JOIN doctors d ON p.doctor_id = d.id
                         LEFT JOIN hospitals h ON p.hospital_id = h.id
+                        -- adherence window = the 30 completed days before today, never before the registration day
+                        CROSS JOIN LATERAL (
+                            SELECT GREATEST(p.created_at::date, CURRENT_DATE - 30) AS start_day,
+                                   CURRENT_DATE - 1 AS end_day
+                        ) win
+                        LEFT JOIN LATERAL (
+                            SELECT MAX(w.entry_date) AS last_weekly_date,
+                                   ARRAY_AGG(w.entry_date ORDER BY w.entry_date) FILTER (WHERE w.total_score IS NOT NULL) AS lars_dates,
+                                   ARRAY_AGG(w.total_score ORDER BY w.entry_date) FILTER (WHERE w.total_score IS NOT NULL) AS lars_values
+                            FROM weekly_entries w
+                            WHERE w.patient_id = p.id
+                        ) wk ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT COUNT(*) AS eq5d5l_count,
+                                   MAX(e.entry_date) AS last_eq5d5l_entry_date,
+                                   ARRAY_AGG(e.entry_date ORDER BY e.entry_date) FILTER (WHERE e.health_vas IS NOT NULL) AS vas_dates,
+                                   ARRAY_AGG(e.health_vas ORDER BY e.entry_date) FILTER (WHERE e.health_vas IS NOT NULL) AS vas_values
+                            FROM eq5d5l_entries e
+                            WHERE e.patient_id = p.id
+                        ) eq ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT COUNT(DISTINCT a.entry_date) AS days_with_entry
+                            FROM (
+                                SELECT entry_date FROM daily_entries WHERE patient_id = p.id AND entry_date BETWEEN win.start_day AND win.end_day
+                                UNION ALL
+                                SELECT entry_date FROM weekly_entries WHERE patient_id = p.id AND entry_date BETWEEN win.start_day AND win.end_day
+                                UNION ALL
+                                SELECT entry_date FROM monthly_entries WHERE patient_id = p.id AND entry_date BETWEEN win.start_day AND win.end_day
+                                UNION ALL
+                                SELECT entry_date FROM eq5d5l_entries WHERE patient_id = p.id AND entry_date BETWEEN win.start_day AND win.end_day
+                            ) a
+                        ) adh ON TRUE
                         WHERE 
                             (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid))
                             {status_filter}
@@ -360,7 +410,7 @@ async def get_patients(
                     print(f"[getPatients] first_row debug failed: {type(_e).__name__}: {_e}")
             patients = []
             for row in rows:
-                patients.append({
+                item = {
                     "patient_code": row[0],
                     "created_at": row[1].isoformat() if row[1] else None,
                     "status": row[4] if len(row) > 4 else "active",
@@ -376,9 +426,11 @@ async def get_patients(
                     "last_lars_date": row[14].isoformat() if len(row) > 14 and row[14] else None,
                     "last_eq5d5l_score": row[15] if len(row) > 15 and row[15] is not None else None,
                     "last_eq5d5l_date": row[16].isoformat() if len(row) > 16 and row[16] else None,
-                })
+                }
+                item.update(patient_views.list_extension(row._mapping, include_blocks))
+                patients.append(item)
             
-            return {"status": "ok", "patients": patients}
+            return {"status": "ok", "as_of_date": as_of_date.isoformat(), "patients": patients}
     except HTTPException:
         raise
     except Exception as e:
@@ -401,6 +453,8 @@ async def get_patient_detail(
     """
     Get detailed patient data for charts and graphs.
     Returns LARS scores, EQ-5D-5L scores, daily entries with food/drink consumption.
+    Extension v2 (additive): weekly_entries, eq5d5l_entries, monthly_entries, as_of_date,
+    and six more fields per daily entry (see docs/doctor-api-v2.md).
     Only accessible if patient belongs to the doctor's hospital.
     """
     patient_code = validate_patient_code(patient_code)
@@ -437,7 +491,7 @@ async def get_patient_detail(
             async with set_db_context(session, role='doctor', hospital_id=hospital_id):
                 patient_res = await execute_with_retry(
                     session,
-                    text("SELECT id, created_at, hospital_id, status, status_reason FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
+                    text("SELECT id, created_at, hospital_id, status, status_reason, CURRENT_DATE FROM patients WHERE patient_code = :code").bindparams(code=patient_code)
                 )
             if patient_res is None:
                 return JSONResponse(
@@ -454,48 +508,74 @@ async def get_patient_detail(
             patient_hospital_id = str(patient_row[2]) if patient_row[2] else None
             patient_status = patient_row[3] if len(patient_row) > 3 else "active"
             patient_status_reason = patient_row[4] if len(patient_row) > 4 else None
+            as_of_date = patient_row[5]
             
             # Verify patient belongs to the same hospital as doctor
             if patient_hospital_id != hospital_id:
                 raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
             
             async with set_db_context(session, role='doctor', hospital_id=hospital_id):
-                # Get LARS scores over time
+                # Weekly LARS: all rows (extension v2 needs the item answers and rows without a total)
                 lars_res = await execute_with_retry(
                     session,
                     text("""
-                        SELECT entry_date, total_score
+                        SELECT entry_date, total_score,
+                               flatus_control, liquid_stool_leakage, bowel_frequency,
+                               repeat_bowel_opening, urgency_to_toilet
                         FROM weekly_entries
-                        WHERE patient_id = :pid AND total_score IS NOT NULL
+                        WHERE patient_id = :pid
                         ORDER BY entry_date ASC
                     """).bindparams(pid=patient_id)
                 )
             lars_data = []
+            weekly_data = []
             if lars_res:
                 for row in lars_res.fetchall():
-                    lars_data.append({
-                        "date": row[0].isoformat() if row[0] else None,
-                        "score": row[1]
-                    })
+                    if row[1] is not None:  # legacy lars_scores: unchanged (rows with a total only)
+                        lars_data.append({
+                            "date": row[0].isoformat() if row[0] else None,
+                            "score": row[1]
+                        })
+                    weekly_data.append(patient_views.weekly_entry(row[0], row[1], row[2:7]))
             
             async with set_db_context(session, role='doctor', hospital_id=hospital_id):
-                # Get EQ-5D-5L scores over time
+                # EQ-5D-5L: all rows (extension v2 keeps rows without a VAS)
                 eq5d5l_res = await execute_with_retry(
                     session,
                     text("""
-                        SELECT entry_date, health_vas
+                        SELECT entry_date, health_vas,
+                               mobility, self_care, usual_activities,
+                               pain_discomfort, anxiety_depression
                         FROM eq5d5l_entries
-                        WHERE patient_id = :pid AND health_vas IS NOT NULL
+                        WHERE patient_id = :pid
+                        ORDER BY entry_date ASC
+                    """).bindparams(pid=patient_id)
+                )
+                # Monthly QoL (extension v2), same RLS context block
+                monthly_res = await execute_with_retry(
+                    session,
+                    text("""
+                        SELECT entry_date, qol_score, avoid_travel, avoid_social, embarrassed,
+                               worry_notice, depressed, control, satisfaction
+                        FROM monthly_entries
+                        WHERE patient_id = :pid
                         ORDER BY entry_date ASC
                     """).bindparams(pid=patient_id)
                 )
             eq5d5l_data = []
+            eq5d5l_entries_data = []
             if eq5d5l_res:
                 for row in eq5d5l_res.fetchall():
-                    eq5d5l_data.append({
-                        "date": row[0].isoformat() if row[0] else None,
-                        "score": row[1]
-                    })
+                    if row[1] is not None:  # legacy eq5d5l_scores: unchanged (rows with a VAS only)
+                        eq5d5l_data.append({
+                            "date": row[0].isoformat() if row[0] else None,
+                            "score": row[1]
+                        })
+                    eq5d5l_entries_data.append(patient_views.eq5d5l_entry(row[0], row[1], row[2:7]))
+            monthly_data = []
+            if monthly_res:
+                for row in monthly_res.fetchall():
+                    monthly_data.append(patient_views.monthly_entry(row[0], row[1:9]))
             
             async with set_db_context(session, role='doctor', hospital_id=hospital_id):
                 # Daily questionnaires for doctor charts
@@ -509,7 +589,9 @@ async def get_patient_detail(
                             food_fruits_with_skin, food_berries, food_soft_fruits_no_skin, food_muesli_and_bran,
                             drink_water, drink_coffee, drink_tea, drink_alcohol,
                             drink_carbonated, drink_juices, drink_dairy, drink_energy,
-                            bristol_scale, stool_count, bloating, impact_score
+                            bristol_scale, stool_count, bloating, impact_score,
+                            pads_used, urgency, night_stools, leakage,
+                            incomplete_evacuation, activity_interfere
                         FROM daily_entries
                         WHERE patient_id = :pid
                             AND entry_date >= CURRENT_DATE - INTERVAL '730 days'
@@ -519,7 +601,7 @@ async def get_patient_detail(
             daily_data = []
             if daily_res:
                 for row in daily_res.fetchall():
-                    daily_data.append({
+                    daily_item = {
                         "date": row[0].isoformat() if row[0] else None,
                         "food": {
                             "vegetables_all": row[1] or 0,
@@ -547,7 +629,9 @@ async def get_patient_detail(
                         "stool_count": row[20] or 0,
                         "bloating": float(row[21]) if row[21] else 0,
                         "impact_score": float(row[22]) if row[22] else 0,
-                    })
+                    }
+                    daily_item.update(patient_views.daily_extra(*row[23:29]))
+                    daily_data.append(daily_item)
             
             async with set_db_context(session, role='doctor', hospital_id=hospital_id):
                 # Get daily step counts (one row per day)
@@ -578,6 +662,11 @@ async def get_patient_detail(
                 "eq5d5l_scores": eq5d5l_data,
                 "daily_entries": daily_data,
                 "daily_steps": steps_data,
+                # extension v2 (additive)
+                "as_of_date": as_of_date.isoformat() if as_of_date else None,
+                "weekly_entries": weekly_data,
+                "eq5d5l_entries": eq5d5l_entries_data,
+                "monthly_entries": monthly_data,
             }
     except HTTPException:
         raise
