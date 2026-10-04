@@ -27,7 +27,7 @@ app.add_middleware(
 )
 
 # Compress JSON responses over 1 KB (doctor patient list and detail shrink about 10x)
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)  # level 6: ~5x faster than 9, ~10 % larger
 
 # Initialize database
 init_database()

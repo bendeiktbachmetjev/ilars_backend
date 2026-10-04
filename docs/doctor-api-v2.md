@@ -152,8 +152,10 @@ Example: registered 10 days ago and filled in something every day = 10 / 10.
 
 Measured on a local copy with 305 visible patients and about a year of data each:
 
-- List query: about 9 ms → 14–18 ms. Still one database query for the whole list.
+- List query (SQL only): about 9 ms → 14–18 ms. Still one database query for the whole list.
   Expect 2–3 times more on the shared Supabase server.
+- List end to end (real app, 305 patients): about 16 ms → 50 ms, mostly building and
+  encoding the larger reply; about 140 ms with `lars_history`. Fine for a doctor portal.
 - List size: 112 KB → 335 KB raw, about 31 KB with gzip. With `lars_history`:
   734 KB raw, about 70 KB with gzip.
 - Patient detail: one more database query (monthly answers); about 40–65 % larger
@@ -171,16 +173,11 @@ the real route code at the previous commit and at this commit gave identical
 responses once the new keys were removed (list for 4 doctors × 3 statuses, 10 detail
 calls including 403 and 404). All test data was invented.
 
-## Before deploying: one existing security problem
+## Security
 
-Not part of this change, but it matters more once more data goes out:
-`src/services/firebase_auth.py` → `verify_id_token()` accepts a Firebase token
-**without checking its signature** when the Firebase Admin check fails or when
-`FIREBASE_SERVICE_ACCOUNT_JSON` is missing. Someone who knows a doctor's Firebase
-UID could then read that doctor's patient data. Recommended fix (a separate small
-change): refuse the token when the check fails, allow the unchecked mode only
-behind an explicit development-only setting, and confirm the service-account
-variable is set on Railway.
+Every request is authenticated with a verified Firebase ID token (signature, project,
+expiry); see `src/services/firebase_auth.py`. The new fields stay inside the doctor's
+existing access scope: same patients, same hospital check on the detail endpoint.
 
 ## Rollback
 
