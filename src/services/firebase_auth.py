@@ -1,25 +1,27 @@
 """
 Firebase Authentication - verify ID tokens from Google Sign-In.
 
-Every token is verified with the Firebase Admin SDK: signature (Google's public keys),
-audience and issuer (our Firebase project), expiry, issue time and subject. A token that
-fails any check is rejected (the route answers 401).
+Every token is verified against Google's public keys for Firebase ID tokens (signature, RS256 + key id),
+audience and issuer (our Firebase project), expiry and issue time, and a non-empty subject (the uid).
+A token that fails any check is rejected (the route answers 401).
 
-Verifying ID tokens needs no secret, only the Firebase project id:
-    - FIREBASE_SERVICE_ACCOUNT_JSON set: the Admin SDK is initialised with that service account.
-    - Not set (or not usable): the Admin SDK is initialised with the project id only,
-      FIREBASE_PROJECT_ID or DEFAULT_PROJECT_ID (public, the same value as projectId in
-      web/js/firebase/config.js).
+This needs no secret and no Google credentials, only the Firebase project id:
+FIREBASE_PROJECT_ID or DEFAULT_PROJECT_ID (public, the same value as projectId in web/js/firebase/config.js).
+(The Firebase Admin SDK is not used here: its verify_id_token() needs Google application credentials,
+which the production server does not have.)
 
 Development only: ALLOW_UNVERIFIED_TOKENS=1 accepts a token WITHOUT checking it.
 Never set it in production.
 """
 import os
-import json
+import time
 from typing import Optional
 
-import firebase_admin
-from firebase_admin import credentials, auth
+import cachecontrol
+import requests
+from google.auth import jwt as google_jwt
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 try:
     import jwt  # PyJWT
@@ -27,10 +29,10 @@ except Exception:  # pragma: no cover - optional dependency
     jwt = None  # type: ignore
 
 DEFAULT_PROJECT_ID = "ilars-659bc"
-APP_NAME = "ilars-auth"
 CLOCK_SKEW_SECONDS = 10  # tolerate small clock differences between Google and the server
 
-_app = None
+# Google's public keys are fetched over HTTP and cached as long as Google's Cache-Control allows
+_request = google_requests.Request(session=cachecontrol.CacheControl(requests.Session()))
 
 
 def _unverified_allowed() -> bool:
@@ -41,36 +43,8 @@ if _unverified_allowed():
     print("WARNING: ALLOW_UNVERIFIED_TOKENS=1 - ID tokens are accepted WITHOUT verification. Development only!")
 
 
-def _get_app():
-    """The Firebase Admin app used for token verification (created once), or None if it cannot be created."""
-    global _app
-    if _app is not None:
-        return _app
-    try:
-        _app = firebase_admin.get_app(APP_NAME)
-        return _app
-    except ValueError:
-        pass
-
-    credentials_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
-    if credentials_json:
-        try:
-            cred = credentials.Certificate(json.loads(credentials_json))
-            _app = firebase_admin.initialize_app(cred, name=APP_NAME)
-            print("Firebase Admin initialized with a service account")
-            return _app
-        except Exception as e:
-            print(f"WARNING: FIREBASE_SERVICE_ACCOUNT_JSON is not usable ({type(e).__name__}); "
-                  "falling back to project-id-only token verification")
-
-    project_id = os.environ.get("FIREBASE_PROJECT_ID") or DEFAULT_PROJECT_ID
-    try:
-        _app = firebase_admin.initialize_app(options={"projectId": project_id}, name=APP_NAME)
-        print(f"Firebase Admin initialized for project {project_id} (ID token verification only)")
-        return _app
-    except Exception as e:  # pragma: no cover - defensive logging
-        print(f"ERROR: Firebase Admin init failed: {type(e).__name__}: {e}")
-        return None
+def _project_id() -> str:
+    return os.environ.get("FIREBASE_PROJECT_ID") or DEFAULT_PROJECT_ID
 
 
 def _decode_without_verification(id_token: str) -> Optional[dict]:
@@ -83,10 +57,31 @@ def _decode_without_verification(id_token: str) -> Optional[dict]:
     except Exception as e:  # pragma: no cover - defensive logging
         print(f"Token decode without verification failed: {type(e).__name__}")
         return None
-    # Firebase ID tokens carry the user id in 'sub'; the Admin SDK also exposes it as 'uid'
+    # Firebase ID tokens carry the user id in 'sub'
     if "sub" in decoded and "uid" not in decoded:
         decoded["uid"] = decoded["sub"]
     return decoded
+
+
+def _verify(id_token: str) -> dict:
+    """Firebase's ID token rules; raises ValueError (or a google-auth error) when any check fails."""
+    project_id = _project_id()
+    header = google_jwt.decode_header(id_token)
+    if header.get("alg") != "RS256" or not header.get("kid"):
+        raise ValueError("not an RS256 token with a key id")
+    # Signature against Google's securetoken keys, exp/iat (with skew) and audience == project id
+    claims = dict(google_id_token.verify_firebase_token(
+        id_token, _request, audience=project_id, clock_skew_in_seconds=CLOCK_SKEW_SECONDS))
+    if claims.get("iss") != "https://securetoken.google.com/" + project_id:
+        raise ValueError("wrong issuer")
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub or len(sub) > 128:
+        raise ValueError("missing or invalid subject")
+    auth_time = claims.get("auth_time")
+    if auth_time is not None and auth_time > time.time() + CLOCK_SKEW_SECONDS:
+        raise ValueError("auth_time in the future")
+    claims["uid"] = sub
+    return claims
 
 
 def verify_id_token(id_token: str) -> Optional[dict]:
@@ -100,11 +95,8 @@ def verify_id_token(id_token: str) -> Optional[dict]:
         print("WARNING: accepting an UNVERIFIED ID token (ALLOW_UNVERIFIED_TOKENS=1, development only)")
         return _decode_without_verification(id_token)
 
-    app = _get_app()
-    if app is None:
-        return None
     try:
-        return auth.verify_id_token(id_token, app=app, clock_skew_seconds=CLOCK_SKEW_SECONDS)
+        return _verify(id_token.strip())
     except Exception as e:
         print(f"WARNING: ID token rejected: {type(e).__name__}")
         return None

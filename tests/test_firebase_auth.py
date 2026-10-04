@@ -4,7 +4,10 @@ Tests for ID token verification (src/services/firebase_auth.py).
 Google's public keys are replaced by a test key pair, so a token signed with the test key
 plays the role of a real Firebase ID token. No network or secret is needed.
 
-Run from the backend folder (needs firebase-admin and cryptography from requirements.txt):
+The tests must pass WITHOUT Google application credentials, like the production server
+(run with HOME pointing to an empty folder to be sure).
+
+Run from the backend folder (needs firebase-admin's dependencies google-auth, cachecontrol, cryptography):
     python3 -m unittest discover -s tests -v
 """
 import base64
@@ -16,7 +19,6 @@ import unittest
 from unittest import mock
 
 try:
-    import firebase_admin
     import google.oauth2.id_token as google_id_token
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -60,7 +62,7 @@ def _claims(**over):
     return c
 
 
-@unittest.skipUnless(HAVE_DEPS, "firebase-admin / cryptography not installed")
+@unittest.skipUnless(HAVE_DEPS, "google-auth / cryptography not installed")
 class VerifyIdTokenTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -70,7 +72,6 @@ class VerifyIdTokenTest(unittest.TestCase):
     def setUp(self):
         from src.services import firebase_auth
         self.fa = firebase_auth
-        self._reset_app()
         self.env = mock.patch.dict(os.environ, {}, clear=False)
         self.env.start()
         for k in ("FIREBASE_SERVICE_ACCOUNT_JSON", "FIREBASE_PROJECT_ID", "ALLOW_UNVERIFIED_TOKENS",
@@ -83,15 +84,6 @@ class VerifyIdTokenTest(unittest.TestCase):
     def tearDown(self):
         self.certs.stop()
         self.env.stop()
-        self._reset_app()
-
-    def _reset_app(self):
-        from src.services import firebase_auth
-        firebase_auth._app = None
-        try:
-            firebase_admin.delete_app(firebase_admin.get_app(firebase_auth.APP_NAME))
-        except ValueError:
-            pass
 
     def test_valid_token_without_service_account(self):
         decoded = self.fa.verify_id_token(_sign(self.key, _claims()))
@@ -119,10 +111,17 @@ class VerifyIdTokenTest(unittest.TestCase):
         self.assertIsNone(self.fa.verify_id_token(""))
         self.assertIsNone(self.fa.verify_id_token("not-a-jwt"))
 
-    def test_unusable_service_account_falls_back_to_project_id(self):
+    def test_service_account_variable_not_needed_or_used(self):
         os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"] = "{not json"
         self.assertIsNotNone(self.fa.verify_id_token(_sign(self.key, _claims())))
         self.assertIsNone(self.fa.verify_id_token(_sign(self.other_key, _claims())))
+
+    def test_token_without_kid_or_wrong_alg_rejected(self):
+        self.assertIsNone(self.fa.verify_id_token(_sign(self.key, _claims(), {"alg": "RS256", "typ": "JWT"})))
+
+    def test_wrong_issuer_or_empty_subject_rejected(self):
+        self.assertIsNone(self.fa.verify_id_token(_sign(self.key, _claims(iss="https://accounts.google.com"))))
+        self.assertIsNone(self.fa.verify_id_token(_sign(self.key, _claims(sub=""))))
 
     def test_project_id_from_env(self):
         os.environ["FIREBASE_PROJECT_ID"] = "another-project"
