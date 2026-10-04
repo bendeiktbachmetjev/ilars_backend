@@ -1,124 +1,102 @@
 """
 Firebase Authentication - verify ID tokens from Google Sign-In.
 
-Primary mode:
-    - Use Firebase Admin SDK with a service account (recommended for production).
+Every token is verified against Google's public keys for Firebase ID tokens (signature, RS256 + key id),
+audience and issuer (our Firebase project), expiry and issue time, and a non-empty subject (the uid).
+A token that fails any check is rejected (the route answers 401).
 
-Fallback mode (when FIREBASE_SERVICE_ACCOUNT_JSON is not configured):
-    - Decode the JWT without verifying the signature using PyJWT.
-    - This is less secure but allows development/testing when Firebase Admin
-      is not available. Make sure to configure FIREBASE_SERVICE_ACCOUNT_JSON
-      in production to restore full verification.
+This needs no secret and no Google credentials, only the Firebase project id:
+FIREBASE_PROJECT_ID or DEFAULT_PROJECT_ID (public, the same value as projectId in web/js/firebase/config.js).
+(The Firebase Admin SDK is not used here: its verify_id_token() needs Google application credentials,
+which the production server does not have.)
+
+Development only: ALLOW_UNVERIFIED_TOKENS=1 accepts a token WITHOUT checking it.
+Never set it in production.
 """
 import os
-import json
+import time
 from typing import Optional
 
-import firebase_admin
-from firebase_admin import credentials, auth
+import cachecontrol
+import requests
+from google.auth import jwt as google_jwt
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 try:
     import jwt  # PyJWT
 except Exception:  # pragma: no cover - optional dependency
     jwt = None  # type: ignore
 
-_firebase_initialized = False
+DEFAULT_PROJECT_ID = "ilars-659bc"
+CLOCK_SKEW_SECONDS = 10  # tolerate small clock differences between Google and the server
+
+# Google's public keys are fetched over HTTP and cached as long as Google's Cache-Control allows
+_request = google_requests.Request(session=cachecontrol.CacheControl(requests.Session()))
 
 
-def _init_firebase() -> bool:
-    """Initialize Firebase Admin SDK from env var."""
-    global _firebase_initialized
-    if _firebase_initialized:
-        return True
+def _unverified_allowed() -> bool:
+    return os.environ.get("ALLOW_UNVERIFIED_TOKENS") == "1"
 
-    credentials_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
-    if not credentials_json:
-        # Firebase service account not configured
-        print("FIREBASE_SERVICE_ACCOUNT_JSON not set - Firebase Admin not initialized")
-        return False
 
-    try:
-        cred_dict = json.loads(credentials_json)
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-        _firebase_initialized = True
-        print("Firebase Admin initialized successfully")
-        return True
-    except Exception as e:  # pragma: no cover - defensive logging
-        print(f"Firebase init failed: {e}")
-        return False
+if _unverified_allowed():
+    print("WARNING: ALLOW_UNVERIFIED_TOKENS=1 - ID tokens are accepted WITHOUT verification. Development only!")
+
+
+def _project_id() -> str:
+    return os.environ.get("FIREBASE_PROJECT_ID") or DEFAULT_PROJECT_ID
 
 
 def _decode_without_verification(id_token: str) -> Optional[dict]:
-    """
-    Fallback: decode JWT without verifying signature.
-
-    This is intended for development environments where Firebase Admin is not
-    configured. It trusts the token contents and SHOULD NOT be used as the
-    only verification mechanism in production.
-    """
+    """Development only (ALLOW_UNVERIFIED_TOKENS=1): read the token claims without checking anything."""
     if jwt is None:
         print("PyJWT not installed - cannot decode token without verification")
         return None
-
     try:
-        # Do not verify signature / exp / audience in fallback mode.
-        decoded = jwt.decode(
-            id_token,
-            options={
-                "verify_signature": False,
-                "verify_exp": False,
-                "verify_aud": False,
-            },
-        )
-        print(f"Token decoded without verification (fallback mode), keys: {list(decoded.keys())}")
-        
-        # Firebase ID tokens use 'sub' for user ID, not 'uid'
-        # Map 'sub' to 'uid' for compatibility with Firebase Admin SDK format
-        if 'sub' in decoded and 'uid' not in decoded:
-            decoded['uid'] = decoded['sub']
-            print(f"Mapped 'sub' ({decoded['sub']}) to 'uid'")
-        
-        # Also ensure 'email' exists if available
-        if 'email' not in decoded and 'email' in decoded.get('claims', {}):
-            decoded['email'] = decoded['claims']['email']
-        
-        return decoded
+        decoded = jwt.decode(id_token, options={"verify_signature": False, "verify_exp": False, "verify_aud": False})
     except Exception as e:  # pragma: no cover - defensive logging
-        print(f"Token decode without verification failed: {e}")
+        print(f"Token decode without verification failed: {type(e).__name__}")
         return None
+    # Firebase ID tokens carry the user id in 'sub'
+    if "sub" in decoded and "uid" not in decoded:
+        decoded["uid"] = decoded["sub"]
+    return decoded
+
+
+def _verify(id_token: str) -> dict:
+    """Firebase's ID token rules; raises ValueError (or a google-auth error) when any check fails."""
+    project_id = _project_id()
+    header = google_jwt.decode_header(id_token)
+    if header.get("alg") != "RS256" or not header.get("kid"):
+        raise ValueError("not an RS256 token with a key id")
+    # Signature against Google's securetoken keys, exp/iat (with skew) and audience == project id
+    claims = dict(google_id_token.verify_firebase_token(
+        id_token, _request, audience=project_id, clock_skew_in_seconds=CLOCK_SKEW_SECONDS))
+    if claims.get("iss") != "https://securetoken.google.com/" + project_id:
+        raise ValueError("wrong issuer")
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub or len(sub) > 128:
+        raise ValueError("missing or invalid subject")
+    auth_time = claims.get("auth_time")
+    if auth_time is not None and auth_time > time.time() + CLOCK_SKEW_SECONDS:
+        raise ValueError("auth_time in the future")
+    claims["uid"] = sub
+    return claims
 
 
 def verify_id_token(id_token: str) -> Optional[dict]:
     """
-    Verify Firebase ID token and return decoded claims.
-
-    Returns:
-        dict with uid, email, etc. or None if invalid.
+    Verify a Firebase ID token and return its claims (uid, email, ...), or None if it is not valid.
     """
     if not id_token or not id_token.strip():
-        print("ERROR: Empty token provided")
         return None
-    
-    print(f"INFO: Attempting to verify token (length: {len(id_token)}, starts with: {id_token[:20]}...)")
-    
-    # First try full Firebase verification if Admin SDK is configured.
-    firebase_initialized = _init_firebase()
-    print(f"INFO: Firebase Admin initialized: {firebase_initialized}")
-    
-    if firebase_initialized:
-        try:
-            decoded = auth.verify_id_token(id_token)
-            print(f"SUCCESS: Token verified via Firebase Admin SDK, uid: {decoded.get('uid', 'N/A')}")
-            return decoded
-        except Exception as e:  # pragma: no cover - defensive logging
-            print(f"WARNING: Token verification via Firebase Admin failed: {type(e).__name__}: {e}")
 
-    # Fallback: decode without verification (development / misconfigured env).
-    print("INFO: Attempting fallback token decoding (PyJWT available: {})".format(jwt is not None))
-    decoded = _decode_without_verification(id_token)
-    if decoded:
-        print(f"SUCCESS: Token decoded via fallback, uid: {decoded.get('uid', 'N/A')}, email: {decoded.get('email', 'N/A')}")
-    else:
-        print("ERROR: Fallback token decoding also failed")
-    return decoded
+    if _unverified_allowed():
+        print("WARNING: accepting an UNVERIFIED ID token (ALLOW_UNVERIFIED_TOKENS=1, development only)")
+        return _decode_without_verification(id_token)
+
+    try:
+        return _verify(id_token.strip())
+    except Exception as e:
+        print(f"WARNING: ID token rejected: {type(e).__name__}")
+        return None

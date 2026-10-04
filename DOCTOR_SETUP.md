@@ -10,9 +10,13 @@ psql $DATABASE_URL -f migration_doctors_hospitals.sql
 
 Or run the SQL manually in Supabase SQL Editor.
 
-## 2. Add Firebase Service Account to Railway
+## 2. Firebase token verification (Railway variables)
 
-The backend needs to verify Firebase ID tokens from Google Sign-In.
+The backend verifies every Firebase ID token from Google Sign-In (signature, project, expiry) and
+rejects anything else with 401. This needs no secret: by default it uses the public project id
+`ilars-659bc` (override with `FIREBASE_PROJECT_ID`).
+
+A service account is optional (only needed if the backend later calls other Firebase Admin APIs):
 
 1. Go to [Firebase Console](https://console.firebase.google.com/) → your project
 2. **Project Settings** (gear icon) → **Service accounts**
@@ -21,6 +25,9 @@ The backend needs to verify Firebase ID tokens from Google Sign-In.
 5. In **Railway** → your backend service → **Variables**:
    - Add variable: `FIREBASE_SERVICE_ACCOUNT_JSON`
    - Value: paste the **entire JSON content** (as one line, or multi-line is fine)
+
+Never set `ALLOW_UNVERIFIED_TOKENS=1` in production: it accepts tokens without checking them
+(local development only).
 
 ## 3. Add more hospitals (optional)
 
