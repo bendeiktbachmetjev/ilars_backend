@@ -18,6 +18,39 @@ from src.services.patient_service import PatientService
 from src.services import patient_views
 from src.database.rls_context import set_db_context
 
+
+async def log_access(session, doctor_id, patient_id, action):
+    """One patient_access_log row (migration_coordinators.sql), committed at once.
+    No log row, no data: a failed insert raises before anything is returned."""
+    res = await execute_with_retry(
+        session,
+        text("""
+            INSERT INTO patient_access_log (doctor_id, patient_id, action)
+            VALUES (CAST(:doctor_id AS uuid), CAST(:patient_id AS uuid), :action)
+        """).bindparams(doctor_id=doctor_id, patient_id=patient_id, action=action)
+    )
+    if res is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    await session.commit()
+
+
+async def coordinator_may_view(session, is_coordinator, doctor_id, patient_id, patient_hospital_id, action):
+    """Study coordinators (doctors.is_coordinator) may VIEW a patient of any Lithuanian hospital
+    (hospital code starts with 'LT'). Read endpoints only: never call it from an endpoint that changes data.
+    An allowed read is logged first. Returns False when the read is not allowed."""
+    if not is_coordinator or not patient_hospital_id:
+        return False
+    res = await execute_with_retry(
+        session,
+        text("SELECT code FROM hospitals WHERE id = CAST(:hid AS uuid)").bindparams(hid=patient_hospital_id)
+    )
+    row = res.first() if res else None
+    if not row or not str(row[0] or "").startswith("LT"):
+        return False
+    await log_access(session, doctor_id, patient_id, action)
+    return True
+
+
 @router.get("/validatePatientCode")
 async def validate_patient_code_endpoint(x_patient_code: str = Header(None, description="Patient Code")):
     """
@@ -264,6 +297,9 @@ async def get_patients(
 ):
     """
     Get list of patients for the current doctor's hospital.
+    Study coordinators (doctors.is_coordinator) also get every Lithuanian hospital's patients, read-only:
+    each row has can_edit (the doctor's own hospital) and hospital_name; hospital_code (the join code
+    POST /doctors accepts) is sent only for the doctor's own hospital. A coordinator's list is logged.
     Returns patient codes and basic info (no PII).
     status=active (default): only active patients
     status=inactive: only inactive patients (archived)
@@ -288,7 +324,7 @@ async def get_patients(
             # Get doctor's hospital_id and doctor_id
             doctor_result = await execute_with_retry(
                 session,
-                text("SELECT id, hospital_id, CURRENT_DATE FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+                text("SELECT id, hospital_id, CURRENT_DATE, is_coordinator FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
             )
             if doctor_result is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
@@ -301,6 +337,7 @@ async def get_patients(
             doctor_id = str(doctor_row[0])
             hospital_id = str(doctor_row[1])
             as_of_date = doctor_row[2]
+            is_coordinator = bool(doctor_row[3])
             include_blocks = patient_views.parse_include(include)
 
             # Debug logging to understand filtering issues
@@ -312,6 +349,8 @@ async def get_patients(
                 status_filter = "AND p.status = 'active'"
             elif status == "inactive":
                 status_filter = "AND p.status IN ('inactive', 'dead')"
+            # coordinators: every Lithuanian hospital too (read-only, see can_edit)
+            coordinator_filter = " OR h.code LIKE 'LT%'" if is_coordinator else ""
 
             # Get patients from the same hospital with doctor and hospital codes + doctor name
             # Sort: first patients of current doctor, then other patients from same hospital
@@ -348,7 +387,8 @@ async def get_patients(
                             (SELECT MAX(entry_date) FROM daily_entries WHERE patient_id = p.id) AS last_daily_date,
                             (SELECT MAX(entry_date) FROM monthly_entries WHERE patient_id = p.id) AS last_monthly_date,
                             adh.days_with_entry AS adherence_days_with_entry,
-                            GREATEST(0, win.end_day - win.start_day + 1) AS adherence_days_expected
+                            GREATEST(0, win.end_day - win.start_day + 1) AS adherence_days_expected,
+                            h.name AS hospital_name
                         FROM patients p
                         LEFT JOIN doctors d ON p.doctor_id = d.id
                         LEFT JOIN hospitals h ON p.hospital_id = h.id
@@ -385,7 +425,7 @@ async def get_patients(
                             ) a
                         ) adh ON TRUE
                         WHERE 
-                            (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid))
+                            (p.doctor_id = CAST(:doctor_id AS uuid) OR p.hospital_id = CAST(:hospital_id AS uuid){coordinator_filter})
                             {status_filter}
                         ORDER BY 
                             CASE WHEN p.doctor_id = CAST(:doctor_id AS uuid) THEN 0 ELSE 1 END,
@@ -401,6 +441,8 @@ async def get_patients(
             
             rows = result.fetchall()
             print(f"[getPatients] fetched_rows={len(rows)}")
+            if is_coordinator:
+                await log_access(session, doctor_id, None, "list")
             if rows:
                 # Log first row's doctor/hospital linkage for debugging
                 first = rows[0]
@@ -410,13 +452,18 @@ async def get_patients(
                     print(f"[getPatients] first_row debug failed: {type(_e).__name__}: {_e}")
             patients = []
             for row in rows:
+                # can_edit: the patient's hospital is the doctor's own (every write endpoint checks exactly this)
+                can_edit = str(row[3]) == hospital_id
                 item = {
                     "patient_code": row[0],
                     "created_at": row[1].isoformat() if row[1] else None,
                     "status": row[4] if len(row) > 4 else "active",
                     "status_reason": row[5] if len(row) > 5 else None,
                     "doctor_code": row[6] if len(row) > 6 else None,
-                    "hospital_code": row[7] if len(row) > 7 else None,
+                    # another hospital's join code is never sent
+                    "hospital_code": row[7] if can_edit and len(row) > 7 else None,
+                    "hospital_name": row._mapping["hospital_name"],  # by name: merge-safe with appended columns
+                    "can_edit": can_edit,
                     "doctor_first_name": row[8] if len(row) > 8 else None,
                     "doctor_last_name": row[9] if len(row) > 9 else None,
                     "weekly_count": row[10] or 0 if len(row) > 10 else 0,
@@ -455,7 +502,8 @@ async def get_patient_detail(
     Returns LARS scores, EQ-5D-5L scores, daily entries with food/drink consumption.
     Extension v2 (additive): weekly_entries, eq5d5l_entries, monthly_entries, as_of_date,
     and six more fields per daily entry (see docs/doctor-api-v2.md).
-    Only accessible if patient belongs to the doctor's hospital.
+    Only accessible if patient belongs to the doctor's hospital; study coordinators may also view
+    (logged, can_edit = false) a patient of any Lithuanian hospital.
     """
     patient_code = validate_patient_code(patient_code)
     
@@ -476,7 +524,7 @@ async def get_patient_detail(
             # Get doctor's hospital_id
             doctor_result = await execute_with_retry(
                 session,
-                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+                text("SELECT hospital_id, id, is_coordinator FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
             )
             if doctor_result is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
@@ -510,8 +558,10 @@ async def get_patient_detail(
             patient_status_reason = patient_row[4] if len(patient_row) > 4 else None
             as_of_date = patient_row[5]
             
-            # Verify patient belongs to the same hospital as doctor
-            if patient_hospital_id != hospital_id:
+            # Verify patient belongs to the same hospital as doctor (coordinators: any Lithuanian hospital, read-only)
+            can_edit = patient_hospital_id == hospital_id
+            if not can_edit and not await coordinator_may_view(
+                    session, doctor_row[2], str(doctor_row[1]), patient_id, patient_hospital_id, "detail"):
                 raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
             
             async with set_db_context(session, role='doctor', hospital_id=hospital_id):
@@ -658,6 +708,7 @@ async def get_patient_detail(
                 "created_at": created_at.isoformat() if created_at else None,
                 "patient_status": patient_status,
                 "patient_status_reason": patient_status_reason,
+                "can_edit": can_edit,
                 "lars_scores": lars_data,
                 "eq5d5l_scores": eq5d5l_data,
                 "daily_entries": daily_data,
@@ -909,7 +960,7 @@ async def get_patient_status_history(
 ):
     """
     Get history of patient status changes.
-    Only doctor from same hospital can view.
+    Only doctor from same hospital can view (coordinators: any Lithuanian hospital, logged).
     """
     patient_code = validate_patient_code(patient_code)
 
@@ -928,7 +979,7 @@ async def get_patient_status_history(
         async with session_maker() as session:
             doctor_result = await execute_with_retry(
                 session,
-                text("SELECT hospital_id FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
+                text("SELECT hospital_id, id, is_coordinator FROM doctors WHERE firebase_uid = :uid").bindparams(uid=uid)
             )
             if doctor_result is None:
                 raise HTTPException(status_code=503, detail="Database unavailable")
@@ -953,7 +1004,8 @@ async def get_patient_status_history(
             patient_id = patient_row[0]
             patient_hospital_id = str(patient_row[1]) if patient_row[1] else None
 
-            if patient_hospital_id != hospital_id:
+            if patient_hospital_id != hospital_id and not await coordinator_may_view(
+                    session, doctor_row[2], str(doctor_row[1]), patient_id, patient_hospital_id, "status_history"):
                 raise HTTPException(status_code=403, detail="Patient does not belong to your hospital")
 
             history_res = await execute_with_retry(

@@ -148,6 +148,32 @@ Example: registered 10 days ago and filled in something every day = 10 / 10.
 - Cohort overview: `getPatients?status=all&include=lars_history`, once, when the
   overview opens.
 
+## Study coordinators (`is_coordinator`)
+
+Added after v2. It needs a database change
+([`migration_coordinators.sql`](../migration_coordinators.sql), run it **before** merging)
+and it widens which patients a few doctors see.
+
+- `doctors.is_coordinator` marks the study organisers. It is set by hand in the
+  database only; no endpoint changes it. `GET /doctors/me` returns it as
+  `is_coordinator` (next to `is_lithuania`).
+- A coordinator can **view** the patients of every Lithuanian hospital (hospital
+  code starts with `LT`): `GET /getPatients`, `GET /getPatientDetail`,
+  `GET /getPatientStatusHistory`. Foreign hospitals stay closed.
+- A coordinator **changes** only their own hospital's patients, like every doctor:
+  status change, deleting a status change, new patients and registry linking
+  return 403 for another hospital.
+- New keys for every doctor:
+  - every `getPatients` row: `hospital_name`, and `can_edit` (`true` when the
+    patient belongs to the doctor's own hospital);
+  - `getPatientDetail`: `can_edit`.
+  The portal offers write actions only when `can_edit` is `true`.
+- `hospital_code` (the join code `POST /doctors` accepts) is now sent only for
+  the doctor's own hospital; on other rows it is `null`.
+- Every coordinator read outside their own hospital is written to
+  `patient_access_log` (doctor, patient — `NULL` for the list —, action, time)
+  before data is returned. If the log cannot be written, no data is returned.
+
 ## Cost
 
 Measured on a local copy with 305 visible patients and about a year of data each:

@@ -67,7 +67,8 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                     SELECT d.id, d.firebase_uid, d.email, d.first_name, d.last_name,
                            d.hospital_id, d.created_at, d.updated_at,
                            d.doctor_code,
-                           h.name as hospital_name, h.code as hospital_code
+                           h.name as hospital_name, h.code as hospital_code,
+                           d.is_coordinator
                     FROM doctors d
                     LEFT JOIN hospitals h ON d.hospital_id = h.id
                     WHERE d.firebase_uid = :uid
@@ -113,7 +114,8 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                         SELECT d.id, d.firebase_uid, d.email, d.first_name, d.last_name,
                                d.hospital_id, d.created_at, d.updated_at,
                                d.doctor_code,
-                               h.name as hospital_name, h.code as hospital_code
+                               h.name as hospital_name, h.code as hospital_code,
+                               d.is_coordinator
                         FROM doctors d
                         LEFT JOIN hospitals h ON d.hospital_id = h.id
                         WHERE d.firebase_uid = :uid
@@ -129,6 +131,8 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
             hospital_code = row[10] if len(row) > 10 and row[10] else None
             # Lithuanian doctors (hospital code starts with 'LT') get access to the registry.
             is_lithuania = bool(hospital_code and hospital_code.startswith("LT"))
+            # Study coordinators view every Lithuanian hospital's patients, read-only (routes/patients.py).
+            is_coordinator = bool(row[11]) if len(row) > 11 else False
 
             # Profile is complete only if hospital_id exists (doctor_code is auto-generated)
             needs_profile = not hospital_id
@@ -149,6 +153,7 @@ async def get_doctor_profile(claims: dict = Depends(get_current_user)):
                 },
                 "needs_profile": needs_profile,
                 "is_lithuania": is_lithuania,
+                "is_coordinator": is_coordinator,
             }
     except HTTPException:
         raise
