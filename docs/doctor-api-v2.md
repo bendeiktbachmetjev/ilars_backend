@@ -173,6 +173,11 @@ and it widens which patients a few doctors see.
 - Every coordinator read outside their own hospital is written to
   `patient_access_log` (doctor, patient — `NULL` for the list —, action, time)
   before data is returned. If the log cannot be written, no data is returned.
+- Known limit: the patient code is also the patient's only credential in the
+  patient app (`X-Patient-Code` on `/getPatientProfile`, `/sendDaily`, …). A
+  coordinator therefore holds the codes of every Lithuanian patient, as a doctor
+  already holds their own hospital's codes. Those patient-app calls are neither
+  hospital-checked nor logged. Flag only people who are allowed that access.
 
 ## Cost
 

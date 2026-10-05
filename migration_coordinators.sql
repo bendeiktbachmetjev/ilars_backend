@@ -20,6 +20,10 @@
 --     filter its queries; the WHERE clauses and hospital checks in the routes are the real gate.
 --     patient_access_log gets RLS with no policy, so the public Supabase API cannot read or write it.
 --
+-- Known limit: the patient code is also the patient's only credential in the patient app (X-Patient-Code).
+-- A coordinator sees every Lithuanian patient's code, as a doctor sees their own hospital's codes;
+-- patient-app calls made with a code are not hospital-checked or logged. Flag only people allowed that access.
+--
 -- Flag the coordinators (run by hand):
 --   UPDATE doctors SET is_coordinator = true WHERE email IN ('<email 1>', '<email 2>');
 -- Read the log:
