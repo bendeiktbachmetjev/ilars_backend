@@ -10,3 +10,4 @@ firebase-admin>=6.4.0
 PyJWT>=2.9.0
 cachecontrol>=0.12.14
 requests>=2.31
+slowapi>=0.1.9

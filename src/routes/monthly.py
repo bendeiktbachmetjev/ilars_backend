@@ -2,24 +2,26 @@
 Monthly questionnaire endpoints
 """
 from uuid import UUID
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional
 from sqlalchemy import text
 
 from src.models.schemas import MonthlyPayload
 from src.database.connection import get_session, is_initialized
-from src.utils.validators import validate_patient_code
+from src.utils.validators import validate_patient_code, validate_entry_date
 from src.services.patient_service import PatientService
 from src.database.rls_context import set_db_context
+from src.limits import patient_rate_limit
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(patient_rate_limit)])
 
 
 @router.post("/sendMonthly")
 async def send_monthly(payload: MonthlyPayload, x_patient_code: Optional[str] = Header(None)):
     """Save monthly QoL questionnaire entry"""
     patient_code = validate_patient_code(x_patient_code)
+    entry_date = validate_entry_date(payload.entry_date)
     
     if not is_initialized():
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -31,8 +33,11 @@ async def send_monthly(payload: MonthlyPayload, x_patient_code: Optional[str] = 
     try:
         async with session_maker() as session:
             async with session.begin():
-                # Get or create patient
-                patient_id_str = await PatientService.get_or_create_patient(session, patient_code)
+                # Only codes a doctor created; an unknown one is never a new patient
+                patient_id_str = await PatientService.get_patient_id(session, patient_code)
+                if not patient_id_str:
+                    print("🚦 [limit] /sendMonthly: unknown patient code")
+                    raise HTTPException(status_code=404, detail="Patient not found")
                 # Convert string to UUID for proper type handling
                 patient_id = UUID(patient_id_str)
                 
@@ -73,7 +78,7 @@ async def send_monthly(payload: MonthlyPayload, x_patient_code: Optional[str] = 
                             RETURNING id
                         """).bindparams(
                             patient_id=patient_id,
-                            entry_date=payload.entry_date,
+                            entry_date=entry_date,
                             qol_score=payload.qol_score,
                             avoid_travel=avoid_travel,
                             avoid_social=avoid_social,
@@ -86,6 +91,8 @@ async def send_monthly(payload: MonthlyPayload, x_patient_code: Optional[str] = 
                     )
                     row = result.first()
         return {"status": "ok", "id": str(row[0])}
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         error_msg = str(e)

@@ -1,7 +1,7 @@
 """
 Questionnaire logic endpoints
 """
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional
 from sqlalchemy import text
@@ -11,8 +11,9 @@ from src.database.queries import execute_with_retry
 from src.utils.validators import validate_patient_code
 from src.database.rls_context import set_db_context
 from src.services.questionnaire_schedule import pick_questionnaire
+from src.limits import patient_rate_limit
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(patient_rate_limit)])
 
 
 # Supported questionnaire types for GET /getTodayEntry.

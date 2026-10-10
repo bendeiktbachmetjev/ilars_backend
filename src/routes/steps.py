@@ -7,7 +7,7 @@ Doctor retrieves steps via getPatientDetail (included in patients.py response).
 Storage: one row per patient per day in daily_steps table.
 """
 from datetime import date, timedelta
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List
 from pydantic import BaseModel
@@ -16,11 +16,19 @@ from sqlalchemy.dialects.postgresql import UUID
 
 from src.database.connection import get_session, is_initialized
 from src.database.queries import execute_with_retry
-from src.utils.validators import validate_patient_code, validate_period
+from src.utils.validators import validate_patient_code, validate_period, parse_iso_date, utc_today
 from src.services.patient_service import PatientService
 from src.database.rls_context import set_db_context
+from src.limits import patient_rate_limit
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(patient_rate_limit)])
+
+# A first sync starts on the patient's start date (getStepsSyncInfo) and can
+# carry ~550 days, so the number of rows is not capped - the dates are: from 30
+# days before the patient was created (slack for clocks) to today, where a
+# patient's today can be a day ahead of the server's UTC date.
+STEPS_DAYS_BEFORE_CREATED = 30
+MAX_STEPS_PER_DAY = 200_000
 
 
 class StepEntry(BaseModel):
@@ -30,6 +38,23 @@ class StepEntry(BaseModel):
 
 class StepsPayload(BaseModel):
     steps: List[StepEntry]
+
+
+def steps_to_save(entries: List[StepEntry], created_on: date, today: date):
+    """
+    The entries to store - one per day, the last one sent wins - and how many
+    were left out (a date outside the window, a count outside 0..200,000,
+    or a repeated day).
+    """
+    first = created_on - timedelta(days=STEPS_DAYS_BEFORE_CREATED)
+    last = today + timedelta(days=1)
+    keep = {}
+    for entry in entries:
+        day = parse_iso_date(entry.step_date)
+        if day is None or not first <= day <= last or not 0 <= entry.step_count <= MAX_STEPS_PER_DAY:
+            continue
+        keep[day] = entry.step_count
+    return keep, len(entries) - len(keep)
 
 
 @router.get("/getStepsSyncInfo")
@@ -119,17 +144,27 @@ async def send_steps(
     try:
         async with session_maker() as session:
             async with session.begin():
-                patient_id = await PatientService.get_or_create_patient(
-                    session, patient_code
-                )
+                # Only codes a doctor created; an unknown one is never a new patient
+                patient_id = await PatientService.get_patient_id(session, patient_code)
                 if not patient_id:
-                    raise HTTPException(
-                        status_code=500, detail="Failed to resolve patient"
-                    )
+                    print("🚦 [limit] /sendSteps: unknown patient code")
+                    raise HTTPException(status_code=404, detail="Patient not found")
 
                 saved = 0
                 async with set_db_context(session, role='patient', user_id=patient_id):
-                    for entry in payload.steps:
+                    created = await execute_with_retry(
+                        session,
+                        text("SELECT created_at::date FROM patients WHERE id = :pid").bindparams(
+                            bindparam('pid', value=patient_id, type_=UUID),
+                        ),
+                    )
+                    created_on = created.scalar() if created else None
+                    if created_on is None:
+                        raise HTTPException(status_code=503, detail="Database unavailable")
+                    rows, skipped = steps_to_save(payload.steps, created_on, utc_today())
+                    if skipped:
+                        print(f"🚦 [limit] /sendSteps: skipped {skipped} of {len(payload.steps)} rows (dates outside {created_on - timedelta(days=STEPS_DAYS_BEFORE_CREATED)}..today, counts outside 0-{MAX_STEPS_PER_DAY}, or repeated days)")
+                    for step_date, step_count in rows.items():
                         await execute_with_retry(
                             session,
                             text("""
@@ -139,13 +174,13 @@ async def send_steps(
                                 DO UPDATE SET step_count = EXCLUDED.step_count
                             """).bindparams(
                                 bindparam('pid', value=patient_id, type_=UUID),
-                                bindparam('step_date', value=date.fromisoformat(entry.step_date), type_=Date),
-                                bindparam('step_count', value=entry.step_count, type_=Integer),
+                                bindparam('step_date', value=step_date, type_=Date),
+                                bindparam('step_count', value=step_count, type_=Integer),
                             ),
                         )
                         saved += 1
 
-                return {"status": "ok", "saved": saved}
+                return {"status": "ok", "saved": saved, "skipped": skipped}
     except HTTPException:
         raise
     except Exception as e:

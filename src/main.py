@@ -7,6 +7,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from src.config import settings
 from src.database.connection import init_database, is_initialized
+from src.limits import BodySizeLimit
 from src.routes import health, patients, weekly, daily, monthly, eq5d5l, questionnaire, hospitals, doctors, steps, registry
 
 
@@ -16,6 +17,10 @@ app = FastAPI(
     description="Backend API for LARS (Low Anterior Resection Syndrome) patient tracking",
     version="1.0.0"
 )
+
+# Request bodies over 1 MB: 413 (src/limits.py). Added first, so it runs inside
+# CORS and the 413 still carries the CORS headers a browser needs to read it
+app.add_middleware(BodySizeLimit)
 
 # CORS middleware
 app.add_middleware(

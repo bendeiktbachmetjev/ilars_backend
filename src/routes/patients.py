@@ -16,9 +16,10 @@ router = APIRouter()
 from fastapi import Header
 from src.services.patient_service import PatientService
 from src.services import patient_views
+from src.limits import patient_rate_limit
 from src.database.rls_context import set_db_context
 
-@router.get("/validatePatientCode")
+@router.get("/validatePatientCode", dependencies=[Depends(patient_rate_limit)])
 async def validate_patient_code_endpoint(x_patient_code: str = Header(None, description="Patient Code")):
     """
     Validate if a patient code exists in the database.
@@ -58,7 +59,7 @@ class PatientProfileUpdate(BaseModel):
     agreed_to_terms: bool
     agreed_to_promos: bool
 
-@router.get("/getPatientProfile")
+@router.get("/getPatientProfile", dependencies=[Depends(patient_rate_limit)])
 async def get_patient_profile(x_patient_code: str = Header(..., description="Patient Code")):
     """
     Get patient profile data including email and consents.
@@ -109,7 +110,7 @@ async def get_patient_profile(x_patient_code: str = Header(..., description="Pat
             content={"status": "error", "detail": "Internal server error"}
         )
 
-@router.post("/unsubscribePatient")
+@router.post("/unsubscribePatient", dependencies=[Depends(patient_rate_limit)])
 async def unsubscribe_patient(x_patient_code: str = Header(..., description="Patient Code")):
     """
     Withdraw consent for promotional emails.
@@ -152,7 +153,7 @@ async def unsubscribe_patient(x_patient_code: str = Header(..., description="Pat
 class PatientSubscribe(BaseModel):
     email: str
 
-@router.post("/subscribePatient")
+@router.post("/subscribePatient", dependencies=[Depends(patient_rate_limit)])
 async def subscribe_patient(
     payload: PatientSubscribe,
     x_patient_code: str = Header(..., description="Patient Code")
@@ -198,7 +199,7 @@ async def subscribe_patient(
             content={"status": "error", "detail": "Internal server error"}
         )
 
-@router.post("/updatePatientProfile")
+@router.post("/updatePatientProfile", dependencies=[Depends(patient_rate_limit)])
 async def update_patient_profile(
     payload: PatientProfileUpdate,
     x_patient_code: str = Header(..., description="Patient Code")
